@@ -1,0 +1,282 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Research Style v1",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "typography": {
+      "type": "object",
+      "properties": {
+        "latin": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "cjk": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      },
+      "required": [
+        "latin",
+        "cjk"
+      ],
+      "additionalProperties": false
+    },
+    "palette": {
+      "type": "object",
+      "properties": {
+        "background": {
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}$"
+        },
+        "text": {
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}$"
+        },
+        "muted": {
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}$"
+        },
+        "accent": {
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}$"
+        },
+        "series": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^#[0-9A-Fa-f]{6}$"
+          },
+          "minItems": 1,
+          "maxItems": 12
+        }
+      },
+      "required": [
+        "background",
+        "text",
+        "muted",
+        "accent",
+        "series"
+      ],
+      "additionalProperties": false
+    },
+    "chart": {
+      "type": "object",
+      "properties": {
+        "width_mm": {
+          "type": "number",
+          "minimum": 40,
+          "maximum": 400
+        },
+        "height_mm": {
+          "type": "number",
+          "minimum": 40,
+          "maximum": 400
+        },
+        "font_pt": {
+          "type": "number",
+          "minimum": 5,
+          "maximum": 36
+        },
+        "line_width_pt": {
+          "type": "number",
+          "minimum": 0.1,
+          "maximum": 10
+        },
+        "line_style": {
+          "enum": [
+            "solid",
+            "dashed",
+            "dotted",
+            "dashdot"
+          ]
+        },
+        "marker": {
+          "enum": [
+            "none",
+            "circle",
+            "square",
+            "triangle"
+          ]
+        },
+        "marker_size_pt": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 20
+        },
+        "grid": {
+          "type": "boolean"
+        },
+        "dpi": {
+          "type": "integer",
+          "minimum": 72,
+          "maximum": 1200
+        }
+      },
+      "required": [
+        "width_mm",
+        "height_mm",
+        "font_pt",
+        "line_width_pt",
+        "line_style",
+        "marker",
+        "marker_size_pt",
+        "grid",
+        "dpi"
+      ],
+      "additionalProperties": false
+    },
+    "slides": {
+      "type": "object",
+      "properties": {
+        "width_mm": {
+          "type": "number",
+          "minimum": 120,
+          "maximum": 600
+        },
+        "height_mm": {
+          "type": "number",
+          "minimum": 100,
+          "maximum": 600
+        },
+        "margin_mm": {
+          "type": "number",
+          "minimum": 5,
+          "maximum": 80
+        },
+        "title_pt": {
+          "type": "number",
+          "minimum": 16,
+          "maximum": 72
+        },
+        "body_pt": {
+          "type": "number",
+          "minimum": 10,
+          "maximum": 48
+        },
+        "caption_pt": {
+          "type": "number",
+          "minimum": 7,
+          "maximum": 24
+        }
+      },
+      "required": [
+        "width_mm",
+        "height_mm",
+        "margin_mm",
+        "title_pt",
+        "body_pt",
+        "caption_pt"
+      ],
+      "additionalProperties": false
+    },
+    "paper": {
+      "type": "object",
+      "properties": {
+        "width_mm": {
+          "type": "number",
+          "minimum": 100,
+          "maximum": 400
+        },
+        "height_mm": {
+          "type": "number",
+          "minimum": 100,
+          "maximum": 500
+        },
+        "margins_mm": {
+          "type": "object",
+          "properties": {
+            "top": {
+              "type": "number",
+              "minimum": 5,
+              "maximum": 80
+            },
+            "bottom": {
+              "type": "number",
+              "minimum": 5,
+              "maximum": 80
+            },
+            "left": {
+              "type": "number",
+              "minimum": 5,
+              "maximum": 80
+            },
+            "right": {
+              "type": "number",
+              "minimum": 5,
+              "maximum": 80
+            }
+          },
+          "required": [
+            "top",
+            "bottom",
+            "left",
+            "right"
+          ],
+          "additionalProperties": false
+        },
+        "title_pt": {
+          "type": "number",
+          "minimum": 12,
+          "maximum": 36
+        },
+        "heading_pt": {
+          "type": "number",
+          "minimum": 10,
+          "maximum": 28
+        },
+        "body_pt": {
+          "type": "number",
+          "minimum": 8,
+          "maximum": 18
+        },
+        "line_spacing": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 3
+        },
+        "citation_style": {
+          "enum": [
+            "numeric",
+            "author-year"
+          ]
+        }
+      },
+      "required": [
+        "width_mm",
+        "height_mm",
+        "margins_mm",
+        "title_pt",
+        "heading_pt",
+        "body_pt",
+        "line_spacing",
+        "citation_style"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schema_version",
+    "id",
+    "name",
+    "typography",
+    "palette",
+    "chart",
+    "slides",
+    "paper"
+  ],
+  "additionalProperties": false
+}

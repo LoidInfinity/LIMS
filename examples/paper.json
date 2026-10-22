@@ -1,0 +1,20 @@
+{
+  "title": "A shared style for research outputs",
+  "authors": "Demonstration document — no research claims",
+  "abstract": "This document demonstrates deterministic style mapping across charts, slides and manuscript drafts. All numerical examples are synthetic.",
+  "sections": [
+    {
+      "heading": "Purpose",
+      "paragraphs": ["A portable skill package can hold instructions, scripts and supporting resources. This suite adds a versioned configuration shared by different output formats."]
+    },
+    {
+      "heading": "Demonstration",
+      "paragraphs": ["The example data are constructed solely to exercise rendering and contain no experimental evidence. Font choices, paragraph spacing and margins are read from the current style configuration.", "The accompanying manifest records a SHA-256 fingerprint of the configuration so that outputs can be compared against the intended style version."]
+    },
+    {
+      "heading": "Limitations",
+      "paragraphs": ["Matching configuration fingerprints establishes configuration identity, not identical typography across rendering engines. Check the final document in the intended viewer before delivery."]
+    }
+  ],
+  "references": []
+}

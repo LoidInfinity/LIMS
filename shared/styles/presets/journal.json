@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "id": "journal",
+  "name": "通用投稿 / Generic journal",
+  "typography": {
+    "latin": "Arial",
+    "cjk": "Microsoft YaHei"
+  },
+  "palette": {
+    "background": "#FFFFFF",
+    "text": "#172B4D",
+    "muted": "#5E6C84",
+    "accent": "#176B87",
+    "series": [
+      "#176B87",
+      "#D97735",
+      "#47917C",
+      "#8B6BB1"
+    ]
+  },
+  "chart": {
+    "width_mm": 85,
+    "height_mm": 65,
+    "font_pt": 8,
+    "line_width_pt": 1,
+    "line_style": "solid",
+    "marker": "circle",
+    "marker_size_pt": 4,
+    "grid": false,
+    "dpi": 300
+  },
+  "slides": {
+    "width_mm": 338.667,
+    "height_mm": 190.5,
+    "margin_mm": 15,
+    "title_pt": 30,
+    "body_pt": 20,
+    "caption_pt": 11
+  },
+  "paper": {
+    "width_mm": 210,
+    "height_mm": 297,
+    "margins_mm": {
+      "top": 25,
+      "bottom": 25,
+      "left": 25,
+      "right": 25
+    },
+    "title_pt": 20,
+    "heading_pt": 14,
+    "body_pt": 11,
+    "line_spacing": 2,
+    "citation_style": "numeric"
+  }
+}

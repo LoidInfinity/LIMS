@@ -1,0 +1,15 @@
+{
+  "slides": [
+    {
+      "title": "Research style suite",
+      "bullets": ["One versioned style for charts, slides and papers.", "Explicit fields and evidence make style changes reviewable.", "Synthetic demonstration only; no experimental claims."],
+      "caption": "Reproducible scientific communication"
+    },
+    {
+      "title": "Shared visual language",
+      "bullets": ["Palette and fonts come from the same JSON.", "Error bars display supplied values.", "Content remains editable in PowerPoint."],
+      "image": "../output/chart.png",
+      "caption": "Synthetic data; arbitrary units. Error magnitudes are illustrative."
+    }
+  ]
+}
