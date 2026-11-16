@@ -196,7 +196,7 @@ class ComposeTests(unittest.TestCase):
         slide = Presentation(str(output)).slides[0]
         border = next(shape for shape in slide.shapes
                       if shape.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE
-                      and shape.auto_shape_type == MSO_SHAPE.ROUNDED_RECTANGLE)
+                      and shape.auto_shape_type == MSO_SHAPE.RECTANGLE)
         self.assertEqual(border.line.dash_style, MSO_LINE_DASH_STYLE.ROUND_DOT)
         self.assertEqual(str(border.line.color.rgb), "B8B8B7")
         picture = next(shape for shape in slide.shapes if shape.shape_type == MSO_SHAPE_TYPE.PICTURE)
@@ -230,6 +230,22 @@ class ComposeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "too small for a"):
             compose(target, page({"rect": [10, 45, 150, 60], "padding_mm": 0.5, "items": [
                 {"box": [0, 0, 1, 0.5], "text": "标题", "font_pt": 14}]}), out, force=True)
+
+    def test_module_radius_is_explicit(self):
+        from pptx import Presentation
+        from pptx.enum.shapes import MSO_SHAPE, MSO_SHAPE_TYPE
+        descriptor, target = self.template()
+        spec = {"template": descriptor["id"], "pages": [{
+            "layout": self.layout_index(descriptor, "Title and Content"), "title": "圆角",
+            "modules": [{"rect": [10, 45, 100, 50], "radius_mm": 5,
+                         "items": [{"box": [0, 0, 1, 0.3], "text": "标题", "font_pt": 14}]}]}]}
+        output = self.root / "radius.pptx"
+        compose(target, spec, output)
+        slide = Presentation(str(output)).slides[0]
+        rounded = next(shape for shape in slide.shapes
+                       if shape.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE
+                       and shape.auto_shape_type == MSO_SHAPE.ROUNDED_RECTANGLE)
+        self.assertAlmostEqual(rounded.adjustments[0], 5 / 50, places=3)
 
     def test_fitted_textbox_centers_rewritten_text(self):
         from pptx import Presentation

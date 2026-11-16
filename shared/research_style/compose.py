@@ -287,15 +287,19 @@ def _add_modules(slide, modules, base_dir, index):
                 raise ValueError(f"Page {index} module {module_index}: negative {key} {value}")
         if rect[0] + rect[2] > 338.667 + 0.5 or rect[1] + rect[3] > 190.5 + 0.5:
             raise ValueError(f"Page {index} module {module_index}: rect leaves the slide")
-        shape = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Mm(rect[0]), Mm(rect[1]),
-                                       Mm(rect[2]), Mm(rect[3]))
+        if radius > 0:
+            shape = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Mm(rect[0]), Mm(rect[1]),
+                                           Mm(rect[2]), Mm(rect[3]))
+            # roundRect's own default is a large radius; set the requested one explicitly.
+            shape.adjustments[0] = max(0.0, min(0.5, radius / min(rect[2], rect[3])))
+        else:
+            shape = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Mm(rect[0]), Mm(rect[1]),
+                                           Mm(rect[2]), Mm(rect[3]))
         shape.fill.background()
         shape.line.color.rgb = RGBColor.from_string(str(border.get("color", "#B8B8B7")).lstrip("#"))
         shape.line.width = Pt(width_pt)
         shape.line.dash_style = getattr(MSO_LINE_DASH_STYLE,
                                         DASH_STYLES.get(str(border.get("dash", "round_dot")), "ROUND_DOT"))
-        if radius:
-            shape.adjustments[0] = max(0.0, min(0.5, radius / min(rect[2], rect[3])))
         inner = [rect[0] + padding, rect[1] + padding,
                  rect[2] - 2 * padding, rect[3] - 2 * padding]
         if inner[2] <= 0 or inner[3] <= 0:

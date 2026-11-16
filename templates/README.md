@@ -76,7 +76,7 @@ python tools/extract_media.py "开题.pptx" --slide 3 --output assets/slide03
 {"template": "scut-kaituo-16x9", "base_dir": ".", "pages": [
   {"layout": 17, "title": "热电转换", "modules": [
     {"rect": [8.2, 26.9, 156.4, 89.8], "padding_mm": 3.0,
-     "border": {"color": "#B8B8B7", "width_pt": 2.0, "dash": "round_dot"}, "radius_mm": 2.5,
+     "border": {"color": "#B8B8B7", "width_pt": 2.0, "dash": "round_dot"},
      "items": [
        {"box": [0, 0, 1, 0.10], "text": "小标题", "font_pt": 16, "bold": true, "color": "#1F3864", "align": "center"},
        {"box": [0.02, 0.11, 0.96, 0.74], "image": "assets/slide03/slide03-shape21.png"},
@@ -84,6 +84,7 @@ python tools/extract_media.py "开题.pptx" --slide 3 --output assets/slide03
 ```
 
 - `rect` 为毫米、相对幻灯片左上角；`items[].box` 为模块内边距以内的相对比例。
+- 边框默认直角：原稿常是 `roundRect` 且圆角值 0，渲染即直角；需要圆角时显式给 `"radius_mm": 3`。
 - 合成强制内容留在边框内侧：越界、文字超出盒子、item 重叠（除显式 `"overlay": true`）都会报错，不会让文字压到虚线上。
 - `image` 路径相对 spec 文件，或用 spec 的 `base_dir` 指定；图片按保持比例缩放并居中。
 

@@ -72,7 +72,7 @@ python ../../tools/extract_media.py deck.pptx --slide 3 --output assets/slide03
 ```json
 {"layout": 17, "title": "热电转换", "modules": [
   {"rect": [8.2, 26.9, 156.4, 89.8], "padding_mm": 3.0,
-   "border": {"color": "#B8B8B7", "width_pt": 2.0, "dash": "round_dot"}, "radius_mm": 2.5,
+   "border": {"color": "#B8B8B7", "width_pt": 2.0, "dash": "round_dot"},
    "items": [
      {"box": [0, 0, 1, 0.10], "text": "小标题", "font_pt": 16, "bold": true, "color": "#1F3864", "align": "center"},
      {"box": [0.02, 0.11, 0.96, 0.74], "image": "assets/slide03/slide03-shape21.png"},
@@ -80,5 +80,6 @@ python ../../tools/extract_media.py deck.pptx --slide 3 --output assets/slide03
 ```
 
 - `rect` 用毫米（相对幻灯片左上角）；`items[].box` 是模块内边距以内的相对比例；`image` 路径相对 spec 文件，或由 spec 的 `base_dir` 指定。
+- 边框默认是**直角**。原稿常用 `roundRect` 但把圆角值设为 0，渲染就是直角；需要圆角时显式写 `"radius_mm": 3`。
 - 合成会强制内容留在边框内侧：越界、文字超出自身盒子、item 相互重叠（除非显式 `"overlay": true`）都会报错，不会静默压到虚线上。
 - 版式用 `query_template.py show` 的清单确定索引；同名版式存在于多套母版时必须用索引。
