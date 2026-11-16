@@ -228,7 +228,8 @@ class ComposeTests(unittest.TestCase):
             compose(target, page({"rect": [10, 45, 150, 60], "items": [
                 {"box": [0, 0, 1, 0.5], "image": "nope.png"}]}), out, force=True)
         with self.assertRaisesRegex(ValueError, "too small for a"):
-            compose(target, page({"rect": [10, 45, 150, 60], "padding_mm": 0.5, "items": [
+            compose(target, page({"rect": [10, 45, 150, 60], "padding_mm": 0.5,
+                                 "border": {"color": "#B8B8B7", "width_pt": 2.0}, "items": [
                 {"box": [0, 0, 1, 0.5], "text": "标题", "font_pt": 14}]}), out, force=True)
 
     def test_module_radius_is_explicit(self):
@@ -238,6 +239,7 @@ class ComposeTests(unittest.TestCase):
         spec = {"template": descriptor["id"], "pages": [{
             "layout": self.layout_index(descriptor, "Title and Content"), "title": "圆角",
             "modules": [{"rect": [10, 45, 100, 50], "radius_mm": 5,
+                         "border": {"color": "#B8B8B7", "width_pt": 2.0},
                          "items": [{"box": [0, 0, 1, 0.3], "text": "标题", "font_pt": 14}]}]}]}
         output = self.root / "radius.pptx"
         compose(target, spec, output)
@@ -246,6 +248,65 @@ class ComposeTests(unittest.TestCase):
                        if shape.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE
                        and shape.auto_shape_type == MSO_SHAPE.ROUNDED_RECTANGLE)
         self.assertAlmostEqual(rounded.adjustments[0], 5 / 50, places=3)
+
+    def test_panels_split_golden_ratio_and_equal_whitespace(self):
+        from pptx import Presentation
+        from pptx.enum.shapes import MSO_SHAPE_TYPE
+        descriptor, target = self.template()
+        layout = self.layout_index(descriptor, "Title and Content")
+        border = {"color": "#B8B8B7", "width_pt": 2.0, "dash": "round_dot"}
+        spec = {"template": descriptor["id"], "pages": [{
+            "layout": layout, "title": "双板块",
+            "panels": {"area": [8.0, 26.0, 322.0, 156.0], "direction": "horizontal", "ratio": "golden",
+                       "gap_mm": 8.0, "padding_mm": 4.0,
+                       "panels": [
+                           {"border": border, "items": [
+                               {"box": [0, 0, 1, 0.9], "text": "左", "font_pt": 16, "align": "center"}]},
+                           {"border": border, "items": [
+                               {"box": [0, 0, 1, 0.9], "text": "右", "font_pt": 16, "align": "center"}]}]}}]}
+        output = self.root / "panels.pptx"
+        manifest, _ = compose(target, spec, output)
+        panels = manifest["pages"][0]["modules"]
+        self.assertEqual([panel["panel"] for panel in panels], [1, 2])
+        first, second = (panel["rect_mm"] for panel in panels)
+        self.assertAlmostEqual(first[2] / second[2], 1.618, places=2)
+        self.assertLessEqual(abs(panels[0]["whitespace"] - panels[1]["whitespace"]), 0.08)
+        slide = Presentation(str(output)).slides[0]
+        borders = [shape for shape in slide.shapes
+                   if shape.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE]
+        self.assertEqual(len(borders), 2)
+
+        unbalanced = {"template": descriptor["id"], "pages": [{
+            "layout": layout, "title": "t",
+            "panels": {"area": [8.0, 26.0, 322.0, 156.0], "ratio": "golden", "gap_mm": 8.0,
+                       "panels": [
+                           {"items": [{"box": [0, 0, 1, 0.95], "text": "满", "font_pt": 14}]},
+                           {"items": [{"box": [0, 0, 1, 0.4], "text": "空", "font_pt": 14}]}]}}]}
+        with self.assertRaisesRegex(ValueError, "panel whitespace differs too much"):
+            compose(target, unbalanced, self.root / "unbalanced.pptx", force=True)
+        with self.assertRaisesRegex(ValueError, "unknown panels.ratio"):
+            compose(target, {"template": descriptor["id"], "pages": [{
+                "layout": layout, "title": "t",
+                "panels": {"ratio": "fibonacci", "panels": [{"items": []}, {"items": []}]}}]},
+                self.root / "ratio.pptx", force=True)
+
+    def test_module_fill_keeps_alpha(self):
+        from pptx import Presentation
+        from pptx.enum.shapes import MSO_SHAPE_TYPE
+        from pptx.oxml.ns import qn
+        descriptor, target = self.template()
+        spec = {"template": descriptor["id"], "pages": [{
+            "layout": self.layout_index(descriptor, "Title and Content"), "title": "底色",
+            "modules": [{"rect": [10, 45, 150, 60], "padding_mm": 2.0,
+                         "fill": {"color": "#4472C4", "alpha_pct": 15},
+                         "items": [{"box": [0, 0, 1, 0.3], "text": "标题", "font_pt": 14}]}]}]}
+        output = self.root / "filled.pptx"
+        compose(target, spec, output)
+        slide = Presentation(str(output)).slides[0]
+        shape = next(shape for shape in slide.shapes if shape.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE)
+        alpha = shape._element.spPr.find(qn("a:solidFill")).find(qn("a:srgbClr")).find(qn("a:alpha"))
+        self.assertIsNotNone(alpha)
+        self.assertEqual(alpha.get("val"), "15000")
 
     def test_fitted_textbox_centers_rewritten_text(self):
         from pptx import Presentation

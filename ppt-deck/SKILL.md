@@ -2,7 +2,7 @@
 name: ppt-deck
 description: 按共享科研风格或某所高校的既有模板制作可编辑 PPTX，用于组会、学术汇报和研究结果展示；支持从一份 PPTX 提取模板入库、保留封面/目录等页面原型并逐像素复现，也支持按学校、标签、比例和版式检索调用。
 metadata:
-  version: "0.4.0"
+  version: "0.5.0"
 ---
 
 # 科研汇报 PPT
@@ -82,4 +82,22 @@ python ../../tools/extract_media.py deck.pptx --slide 3 --output assets/slide03
 - `rect` 用毫米（相对幻灯片左上角）；`items[].box` 是模块内边距以内的相对比例；`image` 路径相对 spec 文件，或由 spec 的 `base_dir` 指定。
 - 边框默认是**直角**。原稿常用 `roundRect` 但把圆角值设为 0，渲染就是直角；需要圆角时显式写 `"radius_mm": 3`。
 - 合成会强制内容留在边框内侧：越界、文字超出自身盒子、item 相互重叠（除非显式 `"overlay": true`）都会报错，不会静默压到虚线上。
-- 版式用 `query_template.py show` 的清单确定索引；同名版式存在于多套母版时必须用索引。
+- 版式用 `query_template.py show` 的清单确定索引；同名版式存在于多套母版时必须用索引。批量复现时按页记录真实版式（`tools/analyze_page.py` 会输出每页的 `layout_part` 与标题 XML），不要把探针页的版式和标题位置套到所有页。
+
+## 双板块与留白率
+
+需要把版面分成左右（或上下）两个板块时，不要手算坐标，用 `panels` 并让渲染器保证留白均衡：
+
+```json
+{"layout": 17, "title": "双板块", "panels": {
+  "area": [8.0, 26.0, 322.0, 156.0], "direction": "horizontal",
+  "ratio": "golden", "gap_mm": 8.0, "padding_mm": 4.0, "whitespace_tolerance": 0.08,
+  "panels": [
+    {"border": {"color": "#B8B8B7", "width_pt": 2.0, "dash": "round_dot"}, "items": [...]},
+    {"border": {"color": "#B8B8B7", "width_pt": 2.0, "dash": "round_dot"}, "items": [...]}]}}
+```
+
+- `ratio` 支持 `equal`(1:1)、`golden`(1:1.618)、`sqrt2`、`silver`、`double` 或任意正数；比例指第一个板块与第二个板块的宽（高）之比，不要求 1:1。
+- 每个板块的留白率 = 1 − 内容包围盒占比；两者相差超过 `whitespace_tolerance`（默认 0.08）会报错，避免一边塞满一边空荡。不平衡时调整内容或比例，不要靠加空行凑数。
+- 双板块同样受边框约束：内容越界、文字溢出、非设计意图的重叠都会报错。
+- 模块支持 `"fill"` 底色（可带 `"alpha_pct"` 透明度），用于原稿里的浅色卡片；`fill` 与 `border` 可单独或同时使用。

@@ -85,8 +85,31 @@ python tools/extract_media.py "开题.pptx" --slide 3 --output assets/slide03
 
 - `rect` 为毫米、相对幻灯片左上角；`items[].box` 为模块内边距以内的相对比例。
 - 边框默认直角：原稿常是 `roundRect` 且圆角值 0，渲染即直角；需要圆角时显式给 `"radius_mm": 3`。
+- 模块支持 `"fill"` 底色（`{"color": "#4472C4", "alpha_pct": 15}` 表达半透明卡片），可与 `border` 单独或同时使用。
 - 合成强制内容留在边框内侧：越界、文字超出盒子、item 重叠（除显式 `"overlay": true`）都会报错，不会让文字压到虚线上。
 - `image` 路径相对 spec 文件，或用 spec 的 `base_dir` 指定；图片按保持比例缩放并居中。
+
+整页复现可先用分析工具自动起草，再按需微调：
+
+```powershell
+python tools/analyze_page.py "开题.pptx" --slide 4 --slide 5 --assets assets/all `
+  --spec spec-auto.json --layout 17 --template scut-kaituo-16x9
+```
+
+它按 XML 读出每页的虚线框（`prst`/圆角值/线型/线宽）、底色（含透明度）、图片与文本（字号/颜色含 lumMod/项目符号），并逐页记录真实版式与标题 XML；同名版式位于不同母版时索引不同，工具会按页区分。
+
+## 双板块与留白率
+
+需要把一页分成左右（或上下）两块时，用 `panels` 让版式比例和留白自动受控：
+
+```json
+{"layout": 17, "title": "双板块", "panels": {
+  "area": [8.0, 26.0, 322.0, 156.0], "direction": "horizontal",
+  "ratio": "golden", "gap_mm": 8.0, "padding_mm": 4.0,
+  "panels": [{"items": [...]}, {"items": [...]}]}}
+```
+
+`ratio` 可取 `equal`、`golden`(1:1.618)、`sqrt2`、`silver`、`double` 或任意正数。每块留白率 = 1 − 内容包围盒占比，两块相差超过 `whitespace_tolerance`（默认 0.08）即报错。
 
 验证渲染差异可用 `tools/` 下两个脚本：`render_pptx.ps1` 用 PowerPoint 导出 PNG，`compare_renders.py` 逐像素比较并输出差异图。
 

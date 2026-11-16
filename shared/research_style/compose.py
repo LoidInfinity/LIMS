@@ -263,6 +263,76 @@ def _add_image_item(slide, left_mm, top_mm, box, item, module_index, item_index,
                                     Mm(top_mm + (box_h - height) / 2), Mm(width), Mm(height))
 
 
+PANEL_RATIOS = {"equal": 1.0, "golden": 1.618, "sqrt2": 1.414, "silver": 2.414, "double": 2.0}
+
+
+def _panel_rects(area, direction, ratio, gap):
+    x, y, width, height = area
+    if direction == "horizontal":
+        first = (width - gap) * ratio / (1 + ratio)
+        return [[x, y, first, height], [x + first + gap, y, width - first - gap, height]]
+    if direction == "vertical":
+        first = (height - gap) * ratio / (1 + ratio)
+        return [[x, y, width, first], [x, y + first + gap, width, height - first - gap]]
+    raise ValueError(f"panels.direction must be 'horizontal' or 'vertical', got {direction!r}")
+
+
+def _content_fraction(items):
+    """Fraction of the inner area covered by the union box of the items."""
+    boxes = [item.get("box", [0.0, 0.0, 1.0, 1.0]) for item in items]
+    if not boxes:
+        return 0.0
+    left = max(0.0, min(box[0] for box in boxes))
+    top = max(0.0, min(box[1] for box in boxes))
+    right = min(1.0, max(box[0] + box[2] for box in boxes))
+    bottom = min(1.0, max(box[1] + box[3] for box in boxes))
+    return max(0.0, (right - left) * (bottom - top))
+
+
+def _add_panels(slide, panels, base_dir, index):
+    area = panels.get("area") or [8.2, 26.0, 322.3, 156.0]
+    if not isinstance(area, list) or len(area) != 4:
+        raise ValueError(f"Page {index}: panels.area must be [x_mm, y_mm, w_mm, h_mm]")
+    direction = panels.get("direction", "horizontal")
+    ratio_key = panels.get("ratio", "equal")
+    if isinstance(ratio_key, (int, float)):
+        ratio = float(ratio_key)
+    elif str(ratio_key).replace(".", "", 1).replace("-", "", 1).isdigit():
+        ratio = float(ratio_key)
+    else:
+        ratio = PANEL_RATIOS.get(str(ratio_key))
+        if ratio is None:
+            raise ValueError(f"Page {index}: unknown panels.ratio {ratio_key!r}; use equal, golden, sqrt2, silver, "
+                             "double or a number")
+    if ratio <= 0:
+        raise ValueError(f"Page {index}: panels.ratio must be positive")
+    gap = float(panels.get("gap_mm", 6.0))
+    definitions = panels.get("panels")
+    if not isinstance(definitions, list) or len(definitions) != 2:
+        raise ValueError(f"Page {index}: panels.panels must describe exactly two panels")
+    rects = _panel_rects(area, direction, ratio, gap)
+    padding = float(panels.get("padding_mm", 4.0))
+    tolerance = float(panels.get("whitespace_tolerance", 0.08))
+    modules, whitespaces = [], []
+    for position, definition in enumerate(definitions):
+        if not isinstance(definition, dict):
+            raise ValueError(f"Page {index}: panel {position + 1} must be an object")
+        items = definition.get("items") or []
+        modules.append({"rect": rects[position], "padding_mm": padding,
+                        "border": definition.get("border"),
+                        "items": items})
+        whitespaces.append(1.0 - _content_fraction(items))
+    if abs(whitespaces[0] - whitespaces[1]) > tolerance:
+        raise ValueError(f"Page {index}: panel whitespace differs too much "
+                         f"({whitespaces[0]:.3f} vs {whitespaces[1]:.3f}, tolerance {tolerance}); "
+                         "balance the content or adjust panels.ratio")
+    summary = _add_modules(slide, modules, base_dir, index)
+    for position, entry in enumerate(summary):
+        entry["panel"] = position + 1
+        entry["whitespace"] = round(whitespaces[position], 4)
+    return summary
+
+
 def _add_modules(slide, modules, base_dir, index):
     from pptx.dml.color import RGBColor
     from pptx.enum.dml import MSO_LINE_DASH_STYLE
@@ -275,19 +345,27 @@ def _add_modules(slide, modules, base_dir, index):
         if not isinstance(module, dict):
             raise ValueError(f"Page {index}: module {module_index} must be an object")
         rect = _module_rect(module, module_index)
-        border = module.get("border") or {}
-        width_pt = float(border.get("width_pt", 2.0))
-        padding = float(module.get("padding_mm", 2.0))
-        if padding < width_pt * 25.4 / 72 / 2 + 0.5:
-            raise ValueError(f"Page {index} module {module_index}: padding_mm {padding} is too small for a "
-                             f"{width_pt} pt border; content would touch the line")
+        border = module.get("border")
+        fill = module.get("fill")
+        framed = isinstance(border, dict)
+        if framed:
+            width_pt = float(border.get("width_pt", 2.0))
+            padding = float(module.get("padding_mm", 2.0))
+            if padding < width_pt * 25.4 / 72 / 2 + 0.5:
+                raise ValueError(f"Page {index} module {module_index}: padding_mm {padding} is too small for a "
+                                 f"{width_pt} pt border; content would touch the line")
+        else:
+            width_pt = 0.0
+            padding = float(module.get("padding_mm", 0.0))
         radius = float(module.get("radius_mm", 0) or 0)
         for key, value in (("x", rect[0]), ("y", rect[1])):
             if value < 0:
                 raise ValueError(f"Page {index} module {module_index}: negative {key} {value}")
         if rect[0] + rect[2] > 338.667 + 0.5 or rect[1] + rect[3] > 190.5 + 0.5:
             raise ValueError(f"Page {index} module {module_index}: rect leaves the slide")
-        if radius > 0:
+        if not framed and not fill:
+            shape = None
+        elif radius > 0:
             shape = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Mm(rect[0]), Mm(rect[1]),
                                            Mm(rect[2]), Mm(rect[3]))
             # roundRect's own default is a large radius; set the requested one explicitly.
@@ -295,11 +373,28 @@ def _add_modules(slide, modules, base_dir, index):
         else:
             shape = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Mm(rect[0]), Mm(rect[1]),
                                            Mm(rect[2]), Mm(rect[3]))
-        shape.fill.background()
-        shape.line.color.rgb = RGBColor.from_string(str(border.get("color", "#B8B8B7")).lstrip("#"))
-        shape.line.width = Pt(width_pt)
-        shape.line.dash_style = getattr(MSO_LINE_DASH_STYLE,
-                                        DASH_STYLES.get(str(border.get("dash", "round_dot")), "ROUND_DOT"))
+        if shape is not None:
+            if fill:
+                from pptx.oxml.ns import qn
+                specification = fill if isinstance(fill, dict) else {"color": fill}
+                shape.fill.solid()
+                shape.fill.fore_color.rgb = RGBColor.from_string(str(specification["color"]).lstrip("#"))
+                alpha = specification.get("alpha_pct")
+                if alpha is not None:
+                    solid = shape._element.spPr.find(qn("a:solidFill"))
+                    srgb = solid.find(qn("a:srgbClr")) if solid is not None else None
+                    if srgb is not None:
+                        node = srgb.makeelement(qn("a:alpha"), {"val": str(int(round(float(alpha) * 1000)))})
+                        srgb.append(node)
+            else:
+                shape.fill.background()
+            if framed:
+                shape.line.color.rgb = RGBColor.from_string(str(border.get("color", "#B8B8B7")).lstrip("#"))
+                shape.line.width = Pt(width_pt)
+                shape.line.dash_style = getattr(MSO_LINE_DASH_STYLE,
+                                                DASH_STYLES.get(str(border.get("dash", "round_dot")), "ROUND_DOT"))
+            else:
+                shape.line.fill.background()
         inner = [rect[0] + padding, rect[1] + padding,
                  rect[2] - 2 * padding, rect[3] - 2 * padding]
         if inner[2] <= 0 or inner[3] <= 0:
@@ -367,11 +462,16 @@ def _add_layout_page(prs, layout, page, index, title_style=None, title_xml=None,
     from pptx.util import Mm, Pt
     slide = prs.slides.add_slide(layout)
     title = page.get("title")
+    page_title_xml = page.get("title_xml") or title_xml
     if title is not None:
         if not isinstance(title, str):
             raise ValueError(f"Page {index}: title must be a string")
-        if title_xml:
-            _set_shape_text(_replace_title_xml(slide, title_xml), title)
+        if page_title_xml:
+            shape = _replace_title_xml(slide, page_title_xml)
+            # Rewriting runs would drop per-slide autofit/geometry specifics, so
+            # only touch the text when the requested title really differs.
+            if shape.text_frame.text != title:
+                _set_shape_text(shape, title)
         else:
             placeholder = slide.shapes.title
             if placeholder is not None:
@@ -403,7 +503,12 @@ def _add_layout_page(prs, layout, page, index, title_style=None, title_xml=None,
                 for run in paragraph.runs:
                     run.font.size = Pt(size)
     modules = page.get("modules") or []
-    if modules:
+    panels = page.get("panels")
+    if panels:
+        if modules or body:
+            raise ValueError(f"Page {index}: use 'panels', 'modules' or 'body' alone, not a combination")
+        page["_module_summary"] = _add_panels(slide, panels, base_dir or Path.cwd(), index)
+    elif modules:
         if body:
             raise ValueError(f"Page {index}: use 'modules' or 'body', not both")
         page["_module_summary"] = _add_modules(slide, modules, base_dir or Path.cwd(), index)
