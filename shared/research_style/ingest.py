@@ -192,6 +192,9 @@ def content_style(parts, slide_part, theme_colors):
                 color = _run_color(run, theme_colors)
                 if color:
                     record["color"] = color
+        # Keep the exact title shape so composed content pages render the title
+        # identically instead of re-deriving geometry from the layout.
+        record["title_xml"] = ET.tostring(shape, encoding="unicode")
         return record
     return None
 
@@ -321,7 +324,10 @@ def describe(parts, source_name, digest, keep=()):
         "warnings": warnings,
     }
     if style:
+        title_xml = style.pop("title_xml", None)
         descriptor["content_style"] = {"source_slide": probe, "title": style}
+        if title_xml:
+            descriptor["content_style"]["title_xml"] = title_xml
     return descriptor
 
 def _drop_element(data, tag):

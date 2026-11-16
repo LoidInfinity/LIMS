@@ -42,7 +42,7 @@ python ppt-deck/scripts/ingest_template.py "开题.pptx" --school 华南理工�
 
 - 保留的页以 `slide-N`/自定义标签记入 `template.json` 的 `prototypes[]`，同时记录每个文字形状的 `shape_id` 与原文，供合成时定位。
 - 它们的正文与图片会留在 `template.pptx` 里，**不再满足「无内容」约定**；公开入库前请把示例文字换成占位文字，并在 `--license` 里写清授权。
-- 入库还会采集一张内容页的标题样式（字号、加粗、颜色、对齐）存为 `content_style`，合成版式页时套用。
+- 入库还会采集一张内容页的标题样式（字号、加粗、颜色、对齐）存为 `content_style`，并保存标题形状的原始 XML（`title_xml`）；合成内容页时整形状复用，标题部分可与原稿逐像素一致。
 
 ## 按模板复现
 
@@ -60,8 +60,32 @@ python ppt-deck/scripts/compose_deck.py --template-id scut-kaituo-16x9 --spec co
 ```
 
 - 原型页只改 `texts` 指定的文字槽，不改几何；不写 `texts` 即原样复现（可做到逐像素一致）。每个原型只能用一次。
-- 版式页用模板版式新建，标题套用 `content_style`；幻灯片上的自由图形、图片不会复现。
+- 文字槽若是「按文字定宽、左对齐」的旧式文本框，换字后会自动居中，避免视觉上跑偏；需要固定方向时写成 `{"text": "...", "align": "left"}`。
+- 版式页用模板版式新建，标题形状取自 `content_style.title_xml`；幻灯片上的自由图形、图片不会自动复现。
 - 文字槽尺寸固定，替换后变长会换行或压到相邻元素，交付前必须渲染检查。
+
+## 内容页模块
+
+内容页通常用虚线框分成模块。先把原页图片抽出来，再用 `modules` 描述：
+
+```powershell
+python tools/extract_media.py "开题.pptx" --slide 3 --output assets/slide03
+```
+
+```json
+{"template": "scut-kaituo-16x9", "base_dir": ".", "pages": [
+  {"layout": 17, "title": "热电转换", "modules": [
+    {"rect": [8.2, 26.9, 156.4, 89.8], "padding_mm": 3.0,
+     "border": {"color": "#B8B8B7", "width_pt": 2.0, "dash": "round_dot"}, "radius_mm": 2.5,
+     "items": [
+       {"box": [0, 0, 1, 0.10], "text": "小标题", "font_pt": 16, "bold": true, "color": "#1F3864", "align": "center"},
+       {"box": [0.02, 0.11, 0.96, 0.74], "image": "assets/slide03/slide03-shape21.png"},
+       {"box": [0, 0.87, 1, 0.13], "text": "图注", "font_pt": 10.5, "align": "center"}]}]}]}
+```
+
+- `rect` 为毫米、相对幻灯片左上角；`items[].box` 为模块内边距以内的相对比例。
+- 合成强制内容留在边框内侧：越界、文字超出盒子、item 重叠（除显式 `"overlay": true`）都会报错，不会让文字压到虚线上。
+- `image` 路径相对 spec 文件，或用 spec 的 `base_dir` 指定；图片按保持比例缩放并居中。
 
 验证渲染差异可用 `tools/` 下两个脚本：`render_pptx.ps1` 用 PowerPoint 导出 PNG，`compare_renders.py` 逐像素比较并输出差异图。
 
@@ -78,4 +102,5 @@ python ppt-deck/scripts/compose_deck.py --template-id scut-kaituo-16x9 --spec co
 - `preview.png` 是几何预览（色块 + 版式名），不是 PowerPoint 渲染图，因此不会泄露原文，也看不出字体细节。
 - 一个原型只能用于一页；同一设计要多页复用需要扩展复制逻辑。
 - 原型页的文字槽是固定尺寸，不做自动缩放；替换文字过长会换行甚至重叠。
+- 内容页模块只复现模块边框与模块内内容；原页里不属于模块的自由图形不会被复制。
 - `tools/install.py` 目前只分发四个技能与风格资产，不打包 `templates/`；模板库按仓库路径使用。

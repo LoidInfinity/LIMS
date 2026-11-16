@@ -2,7 +2,7 @@
 name: ppt-deck
 description: 按共享科研风格或某所高校的既有模板制作可编辑 PPTX，用于组会、学术汇报和研究结果展示；支持从一份 PPTX 提取模板入库、保留封面/目录等页面原型并逐像素复现，也支持按学校、标签、比例和版式检索调用。
 metadata:
-  version: "0.3.0"
+  version: "0.4.0"
 ---
 
 # 科研汇报 PPT
@@ -56,6 +56,29 @@ python scripts/compose_deck.py --template-id scut-kaituo-16x9 --spec compose.jso
 ```
 
 - 原型页保留原幻灯片的全部形状，只改 `texts` 指定的文字槽（键为 shape id 或唯一形状名，id 见 `template.json` 的 `prototypes[].text_slots`）；不写 `texts` 就是原样复现。每个原型只能用一次。
-- 版式页按模板版式新建，标题样式取自入库时采集的 `content_style`；幻灯片上的自由图形和图片不会被复现。
+- 文字槽若是「按文字长度定宽、左对齐」的文本框（老模板常见，靠框刚好包住文字实现视觉居中），换字后会自动改为居中；需要固定方向时把文字写成 `{"text": "...", "align": "left"}`。
+- 版式页按模板版式新建。入库时采集的内容页标题样式与**标题形状原始 XML** 会一并复用，因此内容页的标题部分可与原稿逐像素一致。
 - 原型页文字槽是固定尺寸，替换文字变长会换行甚至压到相邻元素，交付前必须渲染检查。
 - 合成后必须核对：用 `--keep-slides` 保留的原型页应做到渲染逐像素一致，内容页允许版式级差异，并向用户说明差异范围。
+
+## 内容页模块
+
+内容页常用虚线框把版面切成若干模块。先用 `tools/extract_media.py` 把原页图片抽出来，再用 `modules` 描述模块与内容：
+
+```sh
+python ../../tools/extract_media.py deck.pptx --slide 3 --output assets/slide03
+```
+
+```json
+{"layout": 17, "title": "热电转换", "modules": [
+  {"rect": [8.2, 26.9, 156.4, 89.8], "padding_mm": 3.0,
+   "border": {"color": "#B8B8B7", "width_pt": 2.0, "dash": "round_dot"}, "radius_mm": 2.5,
+   "items": [
+     {"box": [0, 0, 1, 0.10], "text": "小标题", "font_pt": 16, "bold": true, "color": "#1F3864", "align": "center"},
+     {"box": [0.02, 0.11, 0.96, 0.74], "image": "assets/slide03/slide03-shape21.png"},
+     {"box": [0, 0.87, 1, 0.13], "text": "图注", "font_pt": 10.5, "align": "center"}]}]}
+```
+
+- `rect` 用毫米（相对幻灯片左上角）；`items[].box` 是模块内边距以内的相对比例；`image` 路径相对 spec 文件，或由 spec 的 `base_dir` 指定。
+- 合成会强制内容留在边框内侧：越界、文字超出自身盒子、item 相互重叠（除非显式 `"overlay": true`）都会报错，不会静默压到虚线上。
+- 版式用 `query_template.py show` 的清单确定索引；同名版式存在于多套母版时必须用索引。

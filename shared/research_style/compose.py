@@ -10,12 +10,17 @@ from __future__ import annotations
 import argparse
 import copy
 import io
+import math
 from pathlib import Path
+import unicodedata
 
 from .core import atomic_bytes, preflight_outputs, read_json, write_json
 from .template import DESCRIPTOR_NAME, descriptor_sha256, load_descriptor, template_root
 
 PROTOTYPE_KINDS = ("prototype", "layout")
+DASH_STYLES = {"dash": "DASH", "round_dot": "ROUND_DOT", "square_dot": "SQUARE_DOT",
+               "dash_dot": "DASH_DOT", "long_dash": "LONG_DASH", "solid": "SOLID"}
+ALIGNMENTS = {"left": "LEFT", "center": "CENTER", "right": "RIGHT", "justify": "JUSTIFY"}
 
 
 def compose_manifest_path(output):
@@ -58,18 +63,67 @@ def _set_shape_text(shape, text):
         paragraph._p.getparent().remove(paragraph._p)
 
 
+def _text_em(text):
+    """Approximate text width in em: CJK glyphs are square, latin roughly half."""
+    return sum(1.0 if unicodedata.east_asian_width(char) in "WF" else 0.5 for char in text)
+
+
+def _text_width_mm(text, font_pt):
+    return _text_em(text) * font_pt * 25.4 / 72
+
+
+def _text_height_mm(text, width_mm, font_pt, line_factor=1.35):
+    per_line = max(1.0, width_mm / (font_pt * 25.4 / 72))
+    lines = sum(max(1, math.ceil(_text_em(line) / per_line)) for line in text.split("\n"))
+    return lines * font_pt * line_factor * 25.4 / 72
+
+
+def _text_fills_box(shape):
+    """True when the original text was sized to fill its box width.
+
+    Such boxes were left-aligned but sized to the text, so the design reads as
+    centered. Rewriting text in them needs explicit centering, otherwise shorter
+    text drifts to the left edge.
+    """
+    if shape.is_placeholder or not shape.has_text_frame or not shape.width:
+        return False
+    frame = shape.text_frame
+    text = frame.text.strip()
+    if not text:
+        return False
+    run = next((run for paragraph in frame.paragraphs for run in paragraph.runs if run.font.size), None)
+    size = run.font.size.pt if run else 18.0
+    usable = (shape.width - frame.margin_left - frame.margin_right) / 36000
+    if usable <= 0:
+        return False
+    return 0.72 <= _text_width_mm(text, size) / usable <= 1.3
+
+
 def _apply_texts(slide, texts, prototype):
     if not isinstance(texts, dict):
         raise ValueError("Prototype page 'texts' must be an object of shape id/name to text")
     current = {slot["shape_id"]: slot["text"] for slot in prototype.get("text_slots", [])}
     changed = []
     for key, value in texts.items():
-        if not isinstance(value, str):
-            raise ValueError(f"Text for shape {key} must be a string")
+        if isinstance(value, dict):
+            if not isinstance(value.get("text"), str):
+                raise ValueError(f"Text for shape {key} must provide a string 'text'")
+            new_text = value["text"]
+            align = value.get("align")
+        else:
+            if not isinstance(value, str):
+                raise ValueError(f"Text for shape {key} must be a string")
+            new_text, align = value, None
         shape = _find_shape(slide, key)
-        if current.get(shape.shape_id) == value:
+        if current.get(shape.shape_id) == new_text and align is None:
             continue
-        _set_shape_text(shape, value)
+        centering = align == "center" or (align is None and _text_fills_box(shape))
+        _set_shape_text(shape, new_text)
+        if centering or align:
+            alignment = {"left": "LEFT", "center": "CENTER", "right": "RIGHT"}.get(align or "center")
+            from pptx.enum.text import PP_ALIGN
+            for paragraph in shape.text_frame.paragraphs:
+                paragraph.alignment = getattr(PP_ALIGN, alignment)
         changed.append(shape.shape_id)
     return changed
 
@@ -103,6 +157,186 @@ def _layout(prs, key, descriptor):
                      + ", ".join(str(index) for index in indexes))
 
 
+def _replace_title_xml(slide, title_xml):
+    """Swap the generated title placeholder for the template's captured title shape."""
+    from pptx.oxml import parse_xml
+    from pptx.oxml.ns import qn
+    placeholder = slide.shapes.title
+    if placeholder is None:
+        raise ValueError("Layout has no title placeholder to receive the captured title")
+    element = parse_xml(title_xml.encode("utf-8"))
+    tree = slide.shapes._spTree
+    used = {int(node.get("id")) for node in tree.iter(qn("p:cNvPr")) if node.get("id")}
+    identifier = element.find(".//" + qn("p:cNvPr"))
+    if identifier is not None and int(identifier.get("id", "0")) in used:
+        identifier.set("id", str(max(used | {1}) + 1))
+    tree.replace(placeholder._element, element)
+    return next(shape for shape in slide.shapes if shape._element is element)
+
+
+def _module_rect(module, index):
+    rect = module.get("rect")
+    if not isinstance(rect, list) or len(rect) != 4 or not all(isinstance(value, (int, float)) for value in rect):
+        raise ValueError(f"Module {index}: rect must be [x_mm, y_mm, w_mm, h_mm]")
+    if rect[2] <= 0 or rect[3] <= 0:
+        raise ValueError(f"Module {index}: rect needs a positive size")
+    return [float(value) for value in rect]
+
+
+def _item_box(item, module_index, item_index):
+    box = item.get("box", [0.0, 0.0, 1.0, 1.0])
+    if not isinstance(box, list) or len(box) != 4 or not all(isinstance(value, (int, float)) for value in box):
+        raise ValueError(f"Module {module_index} item {item_index}: box must be [x, y, w, h] fractions")
+    return [float(value) for value in box]
+
+
+def _check_inside(box, module_index, item_index):
+    x, y, width, height = box
+    if x < -0.001 or y < -0.001 or x + width > 1.001 or y + height > 1.001:
+        raise ValueError(f"Module {module_index} item {item_index}: box {box} leaves the module's inner area; "
+                         "content must not cross the dashed border")
+
+
+def _overlaps(first, second, tolerance=0.002):
+    return (first[0] < second[0] + second[2] - tolerance and second[0] < first[0] + first[2] - tolerance
+            and first[1] < second[1] + second[3] - tolerance and second[1] < first[1] + first[3] - tolerance)
+
+
+def _set_run_style(run, item):
+    from pptx.dml.color import RGBColor
+    from pptx.util import Pt
+    if "font_pt" in item:
+        run.font.size = Pt(item["font_pt"])
+    if item.get("bold"):
+        run.font.bold = True
+    if item.get("italic"):
+        run.font.italic = True
+    if item.get("color"):
+        run.font.color.rgb = RGBColor.from_string(item["color"].lstrip("#"))
+
+
+def _add_text_item(slide, left_mm, top_mm, box, item, module_index, item_index):
+    from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
+    from pptx.util import Mm
+    text = item.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError(f"Module {module_index} item {item_index}: text item needs nonempty 'text'")
+    width_mm, height_mm = box[2], box[3]
+    size = item.get("font_pt", 16)
+    needed = _text_height_mm(text, width_mm - 1.0, size)
+    if needed > height_mm + 0.5:
+        raise ValueError(f"Module {module_index} item {item_index}: text needs {needed:.1f} mm but its box is "
+                         f"{height_mm:.1f} mm high; enlarge the box, shorten the text or lower font_pt")
+    shape = slide.shapes.add_textbox(Mm(left_mm), Mm(top_mm), Mm(width_mm), Mm(height_mm))
+    frame = shape.text_frame
+    frame.word_wrap = True
+    frame.margin_left = frame.margin_right = Mm(0.6)
+    frame.margin_top = frame.margin_bottom = Mm(0.3)
+    frame.vertical_anchor = getattr(MSO_ANCHOR, (item.get("anchor") or "middle").upper())
+    lines = text.split("\n")
+    for position, line in enumerate(lines):
+        paragraph = frame.paragraphs[0] if position == 0 else frame.add_paragraph()
+        paragraph.alignment = getattr(PP_ALIGN, ALIGNMENTS.get(item.get("align", "left"), "LEFT"))
+        run = paragraph.add_run()
+        run.text = line
+        _set_run_style(run, item)
+    return shape
+
+
+def _add_image_item(slide, left_mm, top_mm, box, item, module_index, item_index, base_dir):
+    from PIL import Image
+    from pptx.util import Mm
+    path = item.get("image")
+    if not isinstance(path, str) or not path:
+        raise ValueError(f"Module {module_index} item {item_index}: image item needs 'image' path")
+    source = (Path(base_dir) / path).expanduser().resolve()
+    if not source.is_file():
+        raise ValueError(f"Module {module_index} item {item_index}: missing image {source}")
+    if source.suffix.lower() not in (".png", ".jpg", ".jpeg"):
+        raise ValueError(f"Module {module_index} item {item_index}: image must be PNG/JPEG: {source}")
+    with Image.open(source) as bitmap:
+        ratio = bitmap.width / bitmap.height
+    box_w, box_h = box[2], box[3]
+    width = min(box_w, box_h * ratio)
+    height = width / ratio
+    return slide.shapes.add_picture(str(source), Mm(left_mm + (box_w - width) / 2),
+                                    Mm(top_mm + (box_h - height) / 2), Mm(width), Mm(height))
+
+
+def _add_modules(slide, modules, base_dir, index):
+    from pptx.dml.color import RGBColor
+    from pptx.enum.dml import MSO_LINE_DASH_STYLE
+    from pptx.enum.shapes import MSO_SHAPE
+    from pptx.util import Mm, Pt
+    if not isinstance(modules, list) or not modules:
+        raise ValueError(f"Page {index}: modules must be a nonempty list")
+    placed, summary = [], []
+    for module_index, module in enumerate(modules, 1):
+        if not isinstance(module, dict):
+            raise ValueError(f"Page {index}: module {module_index} must be an object")
+        rect = _module_rect(module, module_index)
+        border = module.get("border") or {}
+        width_pt = float(border.get("width_pt", 2.0))
+        padding = float(module.get("padding_mm", 2.0))
+        if padding < width_pt * 25.4 / 72 / 2 + 0.5:
+            raise ValueError(f"Page {index} module {module_index}: padding_mm {padding} is too small for a "
+                             f"{width_pt} pt border; content would touch the line")
+        radius = float(module.get("radius_mm", 0) or 0)
+        for key, value in (("x", rect[0]), ("y", rect[1])):
+            if value < 0:
+                raise ValueError(f"Page {index} module {module_index}: negative {key} {value}")
+        if rect[0] + rect[2] > 338.667 + 0.5 or rect[1] + rect[3] > 190.5 + 0.5:
+            raise ValueError(f"Page {index} module {module_index}: rect leaves the slide")
+        shape = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Mm(rect[0]), Mm(rect[1]),
+                                       Mm(rect[2]), Mm(rect[3]))
+        shape.fill.background()
+        shape.line.color.rgb = RGBColor.from_string(str(border.get("color", "#B8B8B7")).lstrip("#"))
+        shape.line.width = Pt(width_pt)
+        shape.line.dash_style = getattr(MSO_LINE_DASH_STYLE,
+                                        DASH_STYLES.get(str(border.get("dash", "round_dot")), "ROUND_DOT"))
+        if radius:
+            shape.adjustments[0] = max(0.0, min(0.5, radius / min(rect[2], rect[3])))
+        inner = [rect[0] + padding, rect[1] + padding,
+                 rect[2] - 2 * padding, rect[3] - 2 * padding]
+        if inner[2] <= 0 or inner[3] <= 0:
+            raise ValueError(f"Page {index} module {module_index}: padding leaves no content area")
+        items = module.get("items") or []
+        boxes = []
+        for item_index, item in enumerate(items, 1):
+            if not isinstance(item, dict):
+                raise ValueError(f"Module {module_index} item {item_index} must be an object")
+            box = _item_box(item, module_index, item_index)
+            _check_inside(box, module_index, item_index)
+            boxes.append((item, box))
+        for first_index, (first, first_box) in enumerate(boxes):
+            for second, second_box in boxes[first_index + 1:]:
+                if first.get("overlay") or second.get("overlay"):
+                    continue
+                if _overlaps(first_box, second_box):
+                    raise ValueError(f"Page {index}: module {module_index} items overlap; "
+                                     f"mark one item 'overlay': true only if the design intends it")
+        for item_index, (item, box) in enumerate(boxes, 1):
+            left = inner[0] + box[0] * inner[2]
+            top = inner[1] + box[1] * inner[3]
+            size = (box[2] * inner[2], box[3] * inner[3])
+            target = (left, top, size[0], size[1])
+            if "text" in item:
+                placed_shape = _add_text_item(slide, left, top, target, item, module_index, item_index)
+            elif "image" in item:
+                placed_shape = _add_image_item(slide, left, top, target, item, module_index, item_index, base_dir)
+            else:
+                raise ValueError(f"Module {module_index} item {item_index}: needs 'text' or 'image'")
+            placed.append((module_index, item_index, placed_shape, inner))
+        summary.append({"index": module_index, "rect_mm": rect, "items": len(items)})
+    for module_index, item_index, shape, inner in placed:
+        tolerance = 6000  # 0.17 mm of rounding slack
+        if (shape.left < Mm(inner[0]) - tolerance or shape.top < Mm(inner[1]) - tolerance
+                or shape.left + shape.width > Mm(inner[0] + inner[2]) + tolerance
+                or shape.top + shape.height > Mm(inner[1] + inner[3]) + tolerance):
+            raise ValueError(f"Module {module_index} item {item_index}: rendered shape crosses the module border")
+    return summary
+
+
 def _apply_title_style(shape, style):
     from pptx.dml.color import RGBColor
     from pptx.enum.text import PP_ALIGN
@@ -124,7 +358,7 @@ def _apply_title_style(shape, style):
                 run.font.color.rgb = RGBColor.from_string(style["color"].lstrip("#"))
 
 
-def _add_layout_page(prs, layout, page, index, title_style=None):
+def _add_layout_page(prs, layout, page, index, title_style=None, title_xml=None, base_dir=None):
     from pptx.enum.shapes import PP_PLACEHOLDER
     from pptx.util import Mm, Pt
     slide = prs.slides.add_slide(layout)
@@ -132,16 +366,19 @@ def _add_layout_page(prs, layout, page, index, title_style=None):
     if title is not None:
         if not isinstance(title, str):
             raise ValueError(f"Page {index}: title must be a string")
-        placeholder = slide.shapes.title
-        if placeholder is not None:
-            _set_shape_text(placeholder, title)
-            _apply_title_style(placeholder, title_style or {})
+        if title_xml:
+            _set_shape_text(_replace_title_xml(slide, title_xml), title)
         else:
-            box = slide.shapes.add_textbox(Mm(20), Mm(15), prs.slide_width - Mm(40), Mm(30))
-            _set_shape_text(box, title)
-            for run in box.text_frame.paragraphs[0].runs:
-                run.font.size = Pt(28)
-            _apply_title_style(box, title_style or {})
+            placeholder = slide.shapes.title
+            if placeholder is not None:
+                _set_shape_text(placeholder, title)
+                _apply_title_style(placeholder, title_style or {})
+            else:
+                box = slide.shapes.add_textbox(Mm(20), Mm(15), prs.slide_width - Mm(40), Mm(30))
+                _set_shape_text(box, title)
+                for run in box.text_frame.paragraphs[0].runs:
+                    run.font.size = Pt(28)
+                _apply_title_style(box, title_style or {})
     body = page.get("body") or []
     if body:
         if not isinstance(body, list) or not all(isinstance(line, str) for line in body):
@@ -161,6 +398,11 @@ def _add_layout_page(prs, layout, page, index, title_style=None):
             for paragraph in box.text_frame.paragraphs:
                 for run in paragraph.runs:
                     run.font.size = Pt(size)
+    modules = page.get("modules") or []
+    if modules:
+        if body:
+            raise ValueError(f"Page {index}: use 'modules' or 'body', not both")
+        page["_module_summary"] = _add_modules(slide, modules, base_dir or Path.cwd(), index)
     return slide
 
 
@@ -195,6 +437,11 @@ def build(template_dir, spec, output, force=False):
     package = template_dir / descriptor["files"]["package"]
     document = spec if isinstance(spec, dict) else read_json(spec)
     spec_path = None if isinstance(spec, dict) else Path(spec)
+    reference = document.get("base_dir")
+    if reference:
+        base_dir = Path(reference).expanduser().resolve()
+    else:
+        base_dir = spec_path.expanduser().resolve().parent if spec_path else Path.cwd()
     pages = document.get("pages")
     if not isinstance(pages, list) or not pages:
         raise ValueError("Compose spec requires a nonempty 'pages' array")
@@ -232,10 +479,15 @@ def build(template_dir, spec, output, force=False):
                                    "texts_changed": changed})
         else:
             layout = _layout(presentation, page["layout"], descriptor)
-            order.append(_add_layout_page(presentation, layout, page, index,
-                                          descriptor.get("content_style", {}).get("title")))
-            manifest_pages.append({"page": index, "kind": "layout", "layout": layout.name,
-                                   "title": page.get("title", "")})
+            content_style = descriptor.get("content_style", {})
+            slide = _add_layout_page(presentation, layout, page, index, content_style.get("title"),
+                                     content_style.get("title_xml"), base_dir)
+            order.append(slide)
+            record = {"page": index, "kind": "layout", "layout": layout.name,
+                      "title": page.get("title", "")}
+            if page.get("_module_summary"):
+                record["modules"] = page["_module_summary"]
+            manifest_pages.append(record)
     for prototype_id, slide in slides.items():
         if prototype_id not in used:
             _delete_slide(presentation, slide)

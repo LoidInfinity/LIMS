@@ -10,6 +10,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "shared")]
+from research_style.compose import _text_width_mm
 from research_style.compose import build as compose
 from research_style.core import read_json
 from research_style.ingest import ingest
@@ -155,6 +156,107 @@ class ComposeTests(unittest.TestCase):
                                 cwd=self.root, env=environment, text=True, encoding="utf-8", capture_output=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("1 pages", result.stdout)
+
+    def test_content_title_uses_captured_shape(self):
+        from pptx import Presentation
+        descriptor, target = self.template()
+        self.assertIn("title_xml", descriptor["content_style"])
+        spec = {"template": descriptor["id"], "pages": [
+            {"layout": self.layout_index(descriptor, "Title and Content"), "title": "新的页面标题"}]}
+        output = self.root / "titled.pptx"
+        compose(target, spec, output)
+        title = Presentation(str(output)).slides[0].shapes.title
+        self.assertEqual(title.text_frame.text, "新的页面标题")
+        run = title.text_frame.paragraphs[0].runs[0]
+        self.assertEqual(run.font.size.pt, 40)
+        self.assertTrue(run.font.bold)
+        self.assertEqual(str(run.font.color.rgb), "002060")
+        self.assertIn("ph type=\"title\"", descriptor["content_style"]["title_xml"])
+
+    def test_modules_page_draws_borders_and_places_content(self):
+        from PIL import Image
+        from pptx import Presentation
+        from pptx.enum.dml import MSO_LINE_DASH_STYLE
+        from pptx.enum.shapes import MSO_SHAPE, MSO_SHAPE_TYPE
+        descriptor, target = self.template()
+        figure = self.root / "fig.png"
+        Image.new("RGB", (100, 50), (200, 10, 10)).save(figure)
+        spec = {"template": descriptor["id"], "base_dir": str(self.root), "pages": [{
+            "layout": self.layout_index(descriptor, "Title and Content"), "title": "内容页",
+            "modules": [{
+                "rect": [10, 45, 150, 60],
+                "border": {"color": "#B8B8B7", "width_pt": 2.0, "dash": "round_dot"},
+                "items": [
+                    {"box": [0, 0, 1, 0.24], "text": "模块标题", "font_pt": 16, "bold": True, "align": "center"},
+                    {"box": [0.05, 0.3, 0.9, 0.64], "image": "fig.png"},
+                ]}]}]}
+        output = self.root / "modules.pptx"
+        manifest, _ = compose(target, spec, output)
+        self.assertEqual(manifest["pages"][0]["modules"], [{"index": 1, "rect_mm": [10, 45, 150, 60], "items": 2}])
+        slide = Presentation(str(output)).slides[0]
+        border = next(shape for shape in slide.shapes
+                      if shape.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE
+                      and shape.auto_shape_type == MSO_SHAPE.ROUNDED_RECTANGLE)
+        self.assertEqual(border.line.dash_style, MSO_LINE_DASH_STYLE.ROUND_DOT)
+        self.assertEqual(str(border.line.color.rgb), "B8B8B7")
+        picture = next(shape for shape in slide.shapes if shape.shape_type == MSO_SHAPE_TYPE.PICTURE)
+        self.assertGreaterEqual(picture.left, border.left)
+        self.assertLessEqual(picture.left + picture.width, border.left + border.width)
+        self.assertLessEqual(picture.top + picture.height, border.top + border.height)
+
+    def test_modules_reject_border_crossing_and_overlap(self):
+        descriptor, target = self.template()
+        layout = self.layout_index(descriptor, "Title and Content")
+
+        def page(module):
+            return {"template": descriptor["id"], "pages": [{"layout": layout, "title": "t", "modules": [module]}]}
+
+        module = {"rect": [10, 45, 150, 60], "items": [
+            {"box": [0, 0, 1, 0.2], "text": "标题", "font_pt": 14}]}
+        out = self.root / "guard.pptx"
+        with self.assertRaisesRegex(ValueError, "leaves the module"):
+            compose(target, page({"rect": [10, 45, 150, 60], "items": [
+                {"box": [-0.05, 0, 1, 0.2], "text": "越界", "font_pt": 14}]}), out, force=True)
+        with self.assertRaisesRegex(ValueError, "items overlap"):
+            compose(target, page({"rect": [10, 45, 150, 60], "items": [
+                {"box": [0, 0, 0.6, 0.4], "text": "一", "font_pt": 14},
+                {"box": [0.4, 0.2, 0.6, 0.4], "text": "二", "font_pt": 14}]}), out, force=True)
+        with self.assertRaisesRegex(ValueError, "needs .* mm but its box"):
+            compose(target, page({"rect": [10, 45, 150, 60], "items": [
+                {"box": [0, 0, 1.0, 0.05], "text": "很长很长的一段文字" * 6, "font_pt": 20}]}), out, force=True)
+        with self.assertRaisesRegex(ValueError, "missing image"):
+            compose(target, page({"rect": [10, 45, 150, 60], "items": [
+                {"box": [0, 0, 1, 0.5], "image": "nope.png"}]}), out, force=True)
+        with self.assertRaisesRegex(ValueError, "too small for a"):
+            compose(target, page({"rect": [10, 45, 150, 60], "padding_mm": 0.5, "items": [
+                {"box": [0, 0, 1, 0.5], "text": "标题", "font_pt": 14}]}), out, force=True)
+
+    def test_fitted_textbox_centers_rewritten_text(self):
+        from pptx import Presentation
+        from pptx.enum.text import PP_ALIGN
+        from pptx.util import Inches, Mm, Pt
+        presentation = Presentation()
+        presentation.slide_width, presentation.slide_height = Inches(13.333), Inches(7.5)
+        slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+        text = "研究内容"
+        # PowerPoint-era decks size TOC boxes to the text and leave them left
+        # aligned; the visual design reads as centered. Rewriting must re-center.
+        box = slide.shapes.add_textbox(Mm(100), Mm(80), Mm(_text_width_mm(text, 32) + 5.1), Mm(20))
+        run = box.text_frame.paragraphs[0].add_run()
+        run.text = text
+        run.font.size = Pt(32)
+        source = self.root / "fitted.pptx"
+        presentation.save(source)
+        descriptor, target, _, _ = ingest(source, self.library, school="测试大学", school_slug="test-university",
+                                          contributor="unit-test", license_name="test-only",
+                                          keep_slides=[(1, "cover")])
+        slot = descriptor["prototypes"][0]["text_slots"][0]
+        output = self.root / "fitted-out.pptx"
+        compose(target, {"template": descriptor["id"], "pages": [
+            {"prototype": "cover", "texts": {str(slot["shape_id"]): "研究结论与展望"}}]}, output)
+        changed = Presentation(str(output)).slides[0].shapes[0]
+        self.assertEqual(changed.text_frame.text, "研究结论与展望")
+        self.assertEqual(changed.text_frame.paragraphs[0].alignment, PP_ALIGN.CENTER)
 
 
 if __name__ == "__main__":
