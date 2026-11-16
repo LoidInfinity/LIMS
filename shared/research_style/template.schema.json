@@ -158,6 +158,11 @@
             "minimum": 0,
             "maximum": 255
           },
+          "master": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 15
+          },
           "part": {
             "type": "string",
             "maxLength": 300
@@ -218,6 +223,116 @@
                   "type": "number"
                 }
               }
+            }
+          }
+        }
+      }
+    },
+    "prototypes": {
+      "type": "array",
+      "maxItems": 24,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "source_slide",
+          "layout_index",
+          "text_slots"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
+          },
+          "source_slide": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 999
+          },
+          "layout_index": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255
+          },
+          "layout_name": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "text_slots": {
+            "type": "array",
+            "maxItems": 200,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "shape_id",
+                "name",
+                "text"
+              ],
+              "properties": {
+                "shape_id": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "name": {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                "text": {
+                  "type": "string",
+                  "maxLength": 20000
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "content_style": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source_slide": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 999
+        },
+        "title": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "x_mm": {
+              "type": "number"
+            },
+            "y_mm": {
+              "type": "number"
+            },
+            "w_mm": {
+              "type": "number"
+            },
+            "h_mm": {
+              "type": "number"
+            },
+            "font_pt": {
+              "type": "number",
+              "minimum": 5,
+              "maximum": 96
+            },
+            "bold": {
+              "type": "boolean"
+            },
+            "color": {
+              "type": "string",
+              "pattern": "^#[0-9A-Fa-f]{6}$"
+            },
+            "align": {
+              "enum": [
+                "left",
+                "center",
+                "right",
+                "justify"
+              ]
             }
           }
         }

@@ -113,7 +113,7 @@ def catalog_entry(root, path):
         "aspect": doc["aspect"],
         "size": doc["size"],
         "layout_types": sorted({layout["type"] for layout in doc["layouts"]}),
-        "layout_names": [layout["name"] for layout in doc["layouts"]],
+        "layout_names": list(dict.fromkeys(layout["name"] for layout in doc["layouts"])),
         "path": Path(path).parent.relative_to(Path(root)).as_posix(),
         "preview": (Path(path).parent / doc["files"]["preview"]).relative_to(Path(root)).as_posix(),
         "ingested_at": doc["provenance"]["ingested_at"],
