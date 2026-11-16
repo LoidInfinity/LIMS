@@ -174,6 +174,14 @@ class TemplateTests(unittest.TestCase):
         self.assertIn("zju-16x9", listing.stdout)
         self.assertIn("浙江大学", listing.stdout)
 
+        # Redirected output must stay UTF-8 even without PYTHONUTF8, otherwise
+        # Chinese school names turn into mojibake in logs and pipes.
+        legacy = {key: value for key, value in environment.items() if key != "PYTHONUTF8"}
+        redirected = subprocess.run([sys.executable, str(query_script), "--root", str(self.library), "list"],
+                                    cwd=self.root, env=legacy, text=True, encoding="utf-8", capture_output=True)
+        self.assertEqual(redirected.returncode, 0, redirected.stderr)
+        self.assertIn("浙江大学", redirected.stdout)
+
         check = subprocess.run([sys.executable, str(query_script), "--root", str(self.library), "index"],
                                cwd=self.root, env=environment, text=True, encoding="utf-8", capture_output=True)
         self.assertEqual(check.returncode, 0, check.stdout + check.stderr)

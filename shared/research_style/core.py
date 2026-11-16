@@ -6,6 +6,7 @@ import json
 import math
 import os
 from pathlib import Path
+import sys
 import tempfile
 
 SKILLS = ("style-hub", "origin-chart", "ppt-deck", "paper-draft")
@@ -129,7 +130,21 @@ def manifest_path(output):
     return Path(str(output) + ".style.json")
 
 
+def _utf8_when_redirected():
+    """Windows defaults redirected stdout to the ANSI code page, which mangles
+    Chinese names in logs and pipes. Interactively keep the console default."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None or stream.isatty():
+            continue
+        try:
+            reconfigure(encoding="utf-8")
+        except (ValueError, OSError):
+            pass
+
+
 def main_guard(main):
+    _utf8_when_redirected()
     try:
         main()
     except (ValueError, OSError, ImportError) as exc:
