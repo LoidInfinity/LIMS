@@ -1,8 +1,8 @@
 ---
 name: ppt-deck
-description: 按共享科研风格制作可编辑 PPTX，用于组会、学术汇报和研究结果展示。将经确认的大纲、文字及本地图表转成统一字体、配色、尺寸和页边距的幻灯片。
+description: 按共享科研风格或某所高校的既有模板制作可编辑 PPTX，用于组会、学术汇报和研究结果展示；支持从一份 PPTX 提取模板入库，并按学校、标签、比例和版式检索调用。
 metadata:
-  version: "0.1.0"
+  version: "0.2.0"
 ---
 
 # 科研汇报 PPT
@@ -20,3 +20,19 @@ python scripts/build_pptx.py outline.json --style custom-style.json --output mee
 ```
 
 命令使用实际绝对路径。依赖为 `python-pptx`、Pillow 和 `jsonschema`；安装包 `assets/requirements.txt` 或源码根目录有完整依赖。交付 PPTX 及 `.style.json`，说明使用的风格和未完成的检查。
+
+## 模板库
+
+用户提到某所学校、课题组或单位的既有 PPT 模板时，先查库再动手，不要凭印象仿造版式。
+
+```sh
+python scripts/query_template.py list --school 清华 --tag 答辩 --aspect 16:9
+python scripts/query_template.py show tsinghua-thesis-16x9
+python scripts/ingest_template.py deck.pptx --school 清华大学 --school-slug tsinghua \
+  --id tsinghua-thesis-16x9 --name "清华答辩模板" --tags 学术汇报,答辩 \
+  --contributor 姓名 --license "作者已授权本仓库分发"
+```
+
+- 入库只保留母版、版式、主题与版式引用的图片；正文和备注被丢弃，库文件可公开分发。`--license` 必须写清授权来源。
+- 描述与目录的约定见仓库根 `templates/README.md`；`index.json` 由入库自动重建，`query_template.py index --check` 可发现漂移。
+- 模板库目前提供检索与版式几何；按模板版式直接生成幻灯片仍在开发中，生成阶段仍以 `build_pptx.py` 为准，并向用户说明这一限制。

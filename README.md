@@ -2,15 +2,16 @@
 
 一个以 Agent Skills 标准组织的科研技能套件。对话由宿主提供，技能触发由宿主负责；套件只包含技能说明、可执行脚本和可版本化的风格资产。
 
-当前版本 **0.1.0**。共享配置、提取证据、同步、独立安装和 Matplotlib/PPTX/DOCX 生成已实现。Origin 原生适配器只映射系列样式，尚待有许可证的真实环境验收；详见下方能力范围。
+当前版本 **0.2.0**。共享配置、提取证据、同步、独立安装、Matplotlib/PPTX/DOCX 生成已实现；本版新增按学校分组的 PPT 模板库（入库、索引、查询）；Origin 原生适配器只映射系列样式，尚待有许可证的真实环境验收；详见下方能力范围。
 
 ## 目录
 
 ```text
 style-hub/             # 提取、校验、切换、同步
 origin-chart/          # Origin / Matplotlib / plan
-ppt-deck/              # 可编辑 PPTX
+ppt-deck/              # 可编辑 PPTX、模板库入库与查询
 paper-draft/           # DOCX 草稿与基础引用
+templates/             # 按学校分组的 PPT 模板库（母版+版式精简包）
 shared/
   research_style/      # 共用 Python 代码和 JSON Schema
   styles/
@@ -56,7 +57,25 @@ macOS/Linux 把 Python 路径替换为 `.venv/bin/python`。输出已有时脚�
 
 读取优先级：`--style FILE` → `RESEARCH_STYLE_FILE` → 源码相邻 `shared/styles/current.json` → 安装包 `assets/styles/current.json`。显式覆盖无效就报错。`activate` 修改持久默认值，不修改环境变量；检查渲染时注意临时覆盖。
 
-## 安装到宿主
+## PPT 模板库
+
+`templates/` 按学校分组保存 PPT 模板。每条记录只有母版、版式、主题和版式引用的图片：幻灯片正文、备注和只用于某页的图片在入库时被丢弃，所以库内文件可以公开分发。版式几何写进 `template.json`，构建 PPT 时不必再猜位置。
+
+```powershell
+# 入库：一个 PPTX -> templates/<school-slug>/<template-id>/
+.\.venv\Scripts\python.exe ppt-deck/scripts/ingest_template.py "答辩模板.pptx" --school 清华大学 --school-slug tsinghua `
+  --id tsinghua-thesis-16x9 --name "清华答辩模板" --tags 学术汇报,答辩 --contributor "姓名" --license "作者已授权本仓库分发"
+
+# 查询：按学校/标签/比例/版式类型/关键词筛选
+.\.venv\Scripts\python.exe ppt-deck/scripts/query_template.py list --school 清华 --tag 答辩 --aspect 16:9
+.\.venv\Scripts\python.exe ppt-deck/scripts/query_template.py show tsinghua-thesis-16x9
+
+# 索引：检查或重建 index.json
+.\.venv\Scripts\python.exe ppt-deck/scripts/query_template.py index --check
+```
+
+`preview.png` 是版式的几何预览（色块 + 版式名），不是 PowerPoint 渲染图。目录约定、授权要求与已知边界见 [模板库说明](templates/README.md)。
+
 
 必须使用安装器或打包 ZIP，使单个技能携带运行代码和风格快照。只复制源码中的一个技能文件夹会丢失共用依赖。Python 库仍需安装，技能 ZIP 不含 Python 解释器。
 
@@ -101,6 +120,7 @@ macOS/Linux 把 Python 路径替换为 `.venv/bin/python`。输出已有时脚�
 | Origin | CSV 数据、XY 系列、误差棒、系列色/线型/线宽/标记，保存 OPJU | Windows + Origin 2021+ + originpro；字体、画布、轴、网格、背景等依赖模板；真实集成待验收 |
 | Matplotlib | PNG/SVG/PDF，共享 chart/typography/palette | 字体须可用；当前为线性 XY 图，不做统计分析 |
 | PPT | 可编辑标题/正文、图片、说明、分页 | 估算文字容量；需 PowerPoint/LibreOffice 视觉验收 |
+| 模板库 | PPTX → 母版/版式/主题精简包 + 版式几何 + 几何预览 + 出处；索引漂移检查；按学校/标签/比例/版式/关键词查询 | 只记录版式显式声明的占位符几何，母版继承未解析；预览非渲染图；尚未按模板版式生成幻灯片 |
 | 论文 | DOCX 样式、页边距、行距、页码、基础引用与参考文献 | 非 CSL/Zotero；无图表/公式排版；来源需另行核验 |
 
 Origin 不可用时会明确报错，不自动替换渲染后端。可用 `--backend plan --output output/chart-plan.json` 保存数据与样式计划，或显式指定 `--backend matplotlib`。原生后端要求来自 [Origin 官方 Python 包说明](https://pypi.org/project/originpro/)。
@@ -112,9 +132,9 @@ Origin 不可用时会明确报错，不自动替换渲染后端。可用 `--bac
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-测试覆盖风格校验与覆盖优先级、非法 CSV、引用顺序及缺失引用、OOXML 格式属性、提取证据、独立安装、快照差异、同步回滚和三个输出的相同风格指纹。它们不代替 Office/Origin 的视觉与真实宿主自动触发验收。
+测试覆盖风格校验与覆盖优先级、非法 CSV、引用顺序及缺失引用、OOXML 格式属性、提取证据、独立安装、快照差异、同步回滚、三个输出的相同风格指纹，以及模板入库的无内容保证、媒体裁剪、目录漂移与查询过滤。它们不代替 Office/Origin 的视觉与真实宿主自动触发验收。
 
-2026-10-22 本地验证：四个技能通过 `skill-creator` 校验；12 项自动化测试通过；示例的两页 PPT 已经本机 PowerPoint 渲染并检查，论文已由 Word 导出 PDF 并检查，修复了母版继承导致的重复项目符号。Origin 原生集成与三种宿主中的实际自动触发尚未验证。Windows Office 可选复验命令如下，输出目录须尚不存在：
+2026-11-16 本地验证：18 项自动化测试通过；模板精简包经本机 PowerPoint 打开，0 页、1 套母版、11 个版式，无修复提示。2026-10-22 验证：四个技能通过 `skill-creator` 校验；12 项自动化测试通过；示例的两页 PPT 已经本机 PowerPoint 渲染并检查，论文已由 Word 导出 PDF 并检查，修复了母版继承导致的重复项目符号。Origin 原生集成与三种宿主中的实际自动触发尚未验证。Windows Office 可选复验命令如下，输出目录须尚不存在：
 
 ```powershell
 ./tools/verify_office.ps1 -Presentation ./output/meeting.pptx -Document ./output/manuscript.docx -OutputDirectory ./output/review-new
