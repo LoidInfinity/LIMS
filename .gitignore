@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 output/
 dist/
+test-workspace/
 .pytest_cache/
 .coverage
 *.egg-info/
