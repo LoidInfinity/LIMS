@@ -825,6 +825,25 @@ def _repair_collisions(entries, notes=None):
             return
 
 
+def _collision_style(item, catalog=None):
+    catalog = catalog or {}
+    explicit = {key: item[key] for key in (*BASELINE_KEYS, "align", "anchor",
+                                           "line_spacing_pct", "space_after_pt") if key in item}
+    annotation = item.get("annotation")
+    if annotation and annotation in catalog:
+        style = style_for(catalog, annotation, explicit)
+    else:
+        style = effective_style(item, True)
+    return {
+        "font_pt": style.get("font_pt"),
+        "font_latin": style.get("font_latin"),
+        "font_cjk": style.get("font_cjk"),
+        "align": style.get("align"),
+        "anchor": style.get("anchor"),
+        "bullet": item.get("bullet"),
+    }
+
+
 def _add_modules(slide, modules, base_dir, index, role_styles=True, catalog=None,
                  citation_layout="below_image", warnings=None, page=None, strict=True):
     from pptx.dml.color import RGBColor
@@ -938,7 +957,7 @@ def _add_modules(slide, modules, base_dir, index, role_styles=True, catalog=None
             placed.append((module_index, item_index, placed_shape, inner))
             collision_records.append({
                 "payload": item,
-                "rect": payload_collision_rect(item, target),
+                "rect": payload_collision_rect(item, target, _collision_style(item, catalog)),
                 "shape": placed_shape,
                 "inner": inner,
             })
@@ -948,7 +967,8 @@ def _add_modules(slide, modules, base_dir, index, role_styles=True, catalog=None
     for record in collision_records:
         record["rect"] = payload_collision_rect(record["payload"],
                                                 [record["shape"].left / 36000, record["shape"].top / 36000,
-                                                 record["shape"].width / 36000, record["shape"].height / 36000])
+                                                 record["shape"].width / 36000, record["shape"].height / 36000],
+                                                _collision_style(record["payload"], catalog))
     _hard_check_page([(record["payload"], record["rect"]) for record in collision_records], index,
                      strict, warnings)
     page_records = []

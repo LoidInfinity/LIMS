@@ -355,7 +355,32 @@ def payload_text(payload):
     return str(payload.get("text") or "")
 
 
-def payload_collision_rect(payload, box):
+def _run_layout(payload, base_pt):
+    """Width/extra extents when runs use superscript/subscript sizing."""
+    width = 0.0
+    extra_top = extra_bottom = 0.0
+    has_baseline = False
+    paragraphs = payload.get("paragraphs") or []
+    for paragraph in paragraphs:
+        line_width = 0.0
+        for run in paragraph.get("runs", []):
+            run_text = str(run.get("text", ""))
+            annotation = run.get("annotation")
+            size = float(run.get("font_pt") or base_pt)
+            if annotation in ("superscript", "subscript"):
+                has_baseline = True
+                size = size * 0.65
+                shift = 0.30 if annotation == "superscript" else 0.25
+                if annotation == "superscript":
+                    extra_top = max(extra_top, shift * base_pt * 25.4 / 72)
+                else:
+                    extra_bottom = max(extra_bottom, shift * base_pt * 25.4 / 72)
+            line_width += measure_text(run_text, size)[0]
+        width = max(width, line_width)
+    return width, extra_top, extra_bottom, has_baseline
+
+
+def payload_collision_rect(payload, box, style=None):
     """Collision border of an element: glyph ink for text, placement for images.
 
     A badge is one element: its background plate is the collision box, the label
@@ -370,20 +395,29 @@ def payload_collision_rect(payload, box):
             return [box[0] + left * box[2], box[1] + top * box[3],
                     max(0.5, box[2] * (1 - left - right)), max(0.5, box[3] * (1 - top - bottom))]
         return list(box)
-    style = {
-        "font_pt": payload.get("font_pt") or 14,
-        "font_latin": payload.get("font_latin") or "Calibri",
-        "font_cjk": payload.get("font_cjk") or "黑体",
-        "align": payload.get("align") or "left",
-        "anchor": payload.get("anchor") or "top",
-        "bullet": payload.get("bullet"),
-    }
+    style = dict(style or {})
+    style.setdefault("font_pt", payload.get("font_pt") or 14)
+    style.setdefault("font_latin", payload.get("font_latin") or "Calibri")
+    style.setdefault("font_cjk", payload.get("font_cjk") or "黑体")
+    style.setdefault("align", payload.get("align") or "left")
+    style.setdefault("anchor", payload.get("anchor") or "top")
+    if "bullet" not in style:
+        style["bullet"] = payload.get("bullet")
     insets = payload.get("insets_mm") or [0.0, 0.0, 0.0, 0.0]
     wrap = payload.get("word_wrap", True) is not False
     if payload.get("annotation") == "citation":
         wrap = False  # references are deliberately rendered on a single line
-    return text_ink_rect(list(box), payload_text(payload), style, insets,
+    rect = text_ink_rect(list(box), payload_text(payload), style, insets,
                          payload.get("line_spacing_pct"), wrap=wrap)
+    if payload.get("paragraphs"):
+        base_pt = float(style.get("font_pt") or 14)
+        run_width, extra_top, extra_bottom, has_baseline = _run_layout(payload, base_pt)
+        if has_baseline and run_width > rect[2] + 0.05:
+            rect[2] = run_width
+        if has_baseline:
+            rect[1] -= extra_top
+            rect[3] += extra_top + extra_bottom
+    return rect
 
 
 def merge_styles(override=None, base=None):
