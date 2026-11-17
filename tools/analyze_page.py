@@ -393,10 +393,9 @@ def text_payload(shape, colors, fonts, default_pt=18, catalog=None, palette=None
         if citation:
             payload = {"annotation": "citation", "citation": citation, "insets_mm": insets,
                        "font_pt": float(catalog.get("citation", {}).get("font_pt", 12))}
+            payload["allow_overflow"] = True
             if wrap_setting is False:
                 payload["word_wrap"] = False
-            if align:
-                payload["align"] = align
             if anchor:
                 payload["anchor"] = anchor
             return payload
@@ -440,7 +439,8 @@ def text_payload(shape, colors, fonts, default_pt=18, catalog=None, palette=None
             spec.update(paragraph_spacing(paragraph))
             spec_paragraphs.append(spec)
         payload = {"annotation": annotation, "paragraphs": spec_paragraphs,
-                   "font_pt": float(style.get("font_pt", size)), "insets_mm": insets}
+                   "font_pt": float(style.get("font_pt", size)), "insets_mm": insets,
+                   "allow_overflow": True}
         if wrap_setting is False:
             payload["word_wrap"] = False
         if item_color:
@@ -449,8 +449,6 @@ def text_payload(shape, colors, fonts, default_pt=18, catalog=None, palette=None
                 payload["color_role"] = item_role
             else:
                 payload["color"] = item_color
-        if align:
-            payload["align"] = align
         if anchor:
             payload["anchor"] = anchor
         for key in ("bullet", "line_spacing_pct", "space_after_pt"):
@@ -521,6 +519,94 @@ def overlap(first, second, tolerance=0.2):
             and first[1] < second[1] + second[3] - tolerance and second[1] < first[1] + first[3] - tolerance)
 
 
+
+def _box_mm(box, inner):
+    return [inner[0] + box[0] * inner[2], inner[1] + box[1] * inner[3],
+            box[2] * inner[2], box[3] * inner[3]]
+
+
+def _boxes_overlap(first, second, tolerance=0.4):
+    return (first[0] < second[0] + second[2] - tolerance
+            and second[0] < first[0] + first[2] - tolerance
+            and first[1] < second[1] + second[3] - tolerance
+            and second[1] < first[1] + first[3] - tolerance)
+
+
+def _resolve_collisions(entries, inner, images):
+    """Nudge or shrink text that would visibly collide after size normalisation."""
+    entries.sort(key=lambda entry: entry["payload"]["box"][1])
+    placed = []
+    for entry in entries:
+        payload = entry["payload"]
+        rect = _box_mm(payload["box"], inner)
+        if payload.get("allow_overflow"):
+            plain = payload_plain_text(payload)
+            size = float(payload.get("font_pt") or 14)
+            needed = text_height_mm(plain, rect[2] - 1.0, size)
+            if needed > rect[3]:
+                rect[3] = needed
+        if payload.get("overlay"):
+            placed.append(rect)
+            continue
+        obstacles = list(placed)
+        for image in images:
+            depth = min(rect[1] + rect[3], image[1] + image[3]) - max(rect[1], image[1])
+            if depth > 0.3 and rect[1] < image[1] and depth < 7 and _boxes_overlap(rect, image):
+                shift = depth + 0.6
+                if rect[1] - shift >= inner[1]:
+                    rect[1] -= shift
+                    payload["box"] = [(rect[0] - inner[0]) / inner[2], (rect[1] - inner[1]) / inner[3],
+                                      rect[2] / inner[2], rect[3] / inner[3]]
+        attempts = [0.0]
+        for step in range(1, 51):
+            attempts.append(round(step * 0.5, 2))
+        for step in range(1, 21):
+            attempts.append(round(-step * 0.5, 2))
+        for delta in attempts:
+            candidate = [rect[0], rect[1] + delta, rect[2], rect[3]]
+            if candidate[1] < inner[1] or candidate[1] + candidate[3] > inner[1] + inner[3]:
+                continue
+            if not any(_boxes_overlap(candidate, other) for other in obstacles):
+                rect = candidate
+                break
+        else:
+            size = float(payload.get("font_pt") or 14)
+            for step in range(1, 5):
+                smaller = max(9.0, size - step)
+                plain = payload_plain_text(payload)
+                needed = text_height_mm(plain, rect[2] - 1.0, smaller)
+                candidate = [rect[0], rect[1], rect[2], min(rect[3], needed)]
+                if not any(_boxes_overlap(candidate, other) for other in obstacles):
+                    rect, size = candidate, smaller
+                    payload["font_pt"] = smaller
+                    break
+            else:
+                payload["overlay"] = True
+        # Overflow height may exceed the module, but the stored box must stay
+        # inside the inner area; the allow_overflow flag lets the renderer keep
+        # the canonical font size and let glyphs spill instead.
+        rect[0] = max(inner[0], min(rect[0], inner[0] + inner[2]))
+        rect[1] = max(inner[1], min(rect[1], inner[1] + inner[3] - 0.5))
+        rect[2] = max(0.5, min(rect[2], inner[0] + inner[2] - rect[0]))
+        rect[3] = max(0.5, min(rect[3], inner[1] + inner[3] - rect[1]))
+        if payload.get("allow_overflow"):
+            pass
+        payload["box"] = [(rect[0] - inner[0]) / inner[2], (rect[1] - inner[1]) / inner[3],
+                          rect[2] / inner[2], rect[3] / inner[3]]
+        placed.append(rect)
+    # Final safety net: whatever still overlaps after nudging/shrinking is marked
+    # as an intended overlay so the renderer keeps both items instead of failing.
+    for first in range(len(entries)):
+        for second in range(first + 1, len(entries)):
+            a = entries[first]["payload"]
+            b = entries[second]["payload"]
+            if a.get("overlay") or b.get("overlay"):
+                continue
+            if _boxes_overlap(_box_mm(a["box"], inner), _box_mm(b["box"], inner), tolerance=0.0):
+                b["overlay"] = True
+    return entries
+
+
 def clip(item_rect, area):
     left = max(item_rect[0], area[0])
     top = max(item_rect[1], area[1])
@@ -534,11 +620,29 @@ def clip(item_rect, area):
 
 
 def fit_text(payload, rect, inner):
-    """Shrink the font until the text fits its original box, then expand the box if needed."""
+    """Keep the canonical size; expand the box and let the text overflow if needed.
+
+    Shrinking per box is what made two headings of the same purpose end up at
+    different sizes, so annotated text only shrinks when it is genuinely huge.
+    """
     width = max(1.0, rect[2] - 1.0)
     plain = payload_plain_text(payload)
     target = max(1.0, rect[3] - 1.0)
     size = payload.get("font_pt", 18)
+    if payload.get("annotation"):
+        needed = text_height_mm(plain, width, size)
+        if needed > target:
+            grow = needed - target
+            room_below = inner[1] + inner[3] - (rect[1] + rect[3])
+            take = min(grow, max(0.0, room_below))
+            rect[3] += take
+            grow -= take
+            if grow > 0:
+                room_above = rect[1] - inner[1]
+                take = min(grow, max(0.0, room_above))
+                rect[1] -= take
+                rect[3] += take
+        return rect
     while size > 8 and text_height_mm(plain, width, size) > target:
         size -= 1
     payload["font_pt"] = size
@@ -607,15 +711,20 @@ def analyse_slide(slide, number, colors, assets, asset_prefix, size_mm, padding=
         center = [item["rect"][0] + item["rect"][2] / 2, item["rect"][1] + item["rect"][3] / 2]
         target = page_module
         for module in modules:
-            if (inside(item["rect"], module["_inner"]) and
-                    module["_inner"][0] <= center[0] <= module["_inner"][0] + module["_inner"][2] and
-                    module["_inner"][1] <= center[1] <= module["_inner"][1] + module["_inner"][3]):
+            in_inner = (module["_inner"][0] <= center[0] <= module["_inner"][0] + module["_inner"][2] and
+                        module["_inner"][1] <= center[1] <= module["_inner"][1] + module["_inner"][3])
+            in_frame = (module["rect"][0] <= center[0] <= module["rect"][0] + module["rect"][2] and
+                        module["rect"][1] <= center[1] <= module["rect"][1] + module["rect"][3])
+            # References sit right at the frame edge, so judge them by the frame
+            # instead of the padded inner area; their box is clamped later.
+            if in_inner or (item.get("annotation") == "citation" and in_frame):
                 target = module
                 break
         target["items"].append(item)
     result = []
     for module in [*modules, page_module]:
         inner = module.pop("_inner")
+        images = [item["rect"] for item in module["items"] if "image" in item]
         boxes = []
         rendered = []
         for item in list(module["items"]):
@@ -634,19 +743,23 @@ def analyse_slide(slide, number, colors, assets, asset_prefix, size_mm, padding=
                 payload["image"] = item["image"]
             else:
                 for key in ("text", "paragraphs", "role", "annotation", "citation", "font_pt",
+                            "allow_overflow",
                             "bold", "italic", "color", "color_role", "align", "anchor", "font_latin",
                             "font_cjk", "font_cs", "bullet", "line_spacing_pct", "space_after_pt",
                             "insets_mm", "word_wrap"):
                     if key in item:
                         payload[key] = item[key]
                 payload.setdefault("font_pt", 18)
-            for _, existing_box in boxes:
+            for existing_payload, existing_box in boxes:
                 if overlap(box, existing_box, tolerance=0.0005):
-                    payload["overlay"] = True
+                    if "image" in existing_payload or "image" in payload:
+                        payload["overlay"] = True
                     break
             boxes.append((payload, box))
             rendered.append(payload)
-        module["items"] = rendered
+        module["items"] = _resolve_collisions(
+            [{"payload": entry} for entry in rendered], inner, images)
+        module["items"] = [entry["payload"] for entry in module["items"]]
         if module["items"] or module.get("fill"):
             result.append(module)
     return {"number": number, "title": title, "title_xml": title_xml,

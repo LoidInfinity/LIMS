@@ -2,7 +2,7 @@
 name: ppt-deck
 description: 按共享科研风格或某所高校的既有模板制作可编辑 PPTX，用于组会、学术汇报和研究结果展示；支持从一份 PPTX 提取模板入库、保留封面/目录等页面原型并逐像素复现，也支持按学校、标签、比例和版式检索调用。
 metadata:
-  version: "0.9.1"
+  version: "0.10.0"
 ---
 
 # 科研汇报 PPT
@@ -87,6 +87,9 @@ python ../../tools/extract_media.py deck.pptx --slide 3 --output assets/slide03
 - 字体要分别保留 **latin（英文与数字）/ ea（中文）/ cs（复杂文种）** 三套字库；OOXML 里数字跟随 latin，不要用中文字体去渲染数字。项目符号要从段落 `a:pPr` 取 `a:buFont` + `a:buChar`（本库模板的小标题用的是 Wingdings `Ø`，渲染成三角箭头，不是圆点），不能统一写成 `• ` 前缀；`a:buSzPct`、`marL/indent` 一并保留。
 - 文本框的 `insets`（内边距）与 `anchor` 要按原稿保留，否则文字会整体偏移几个像素。
 - **先判断用途，再决定格式**：每个文本框带 `annotation`（display / heading / subheading / body / body_large / bullet / caption / citation / note / label / page_number），每个 run 还可带细分标注（`emphasis`、`superscript`、`subscript`；引用框拆成 journal / year / volume / pages）。模板入库时会从全篇统计**同一用途的众数格式**，写进 `template.json` 的 `text_styles`；合成时按注释查表统一套用，所以两个引用框不会一个 10pt、一个 12pt，也不会字体各异。
+- **同用途同字号、同字库**：字号/字库按注释统一，紧凑文本框不再为"装得下"而各自缩字号；放不下时优先扩框，仍放不下允许溢出，由碰撞避让处理。
+- **对齐策略**：小标题、正文、列表一律左对齐；图注/数值标签居中；引用左对齐并锚定在所在文本框左下角（距左边与底边各 2mm，多条引用在同一行等距排开）。
+- 碰撞避让：合成前先按原位置检测文字/图片碰撞，先尝试小幅上下移动，必要时缩 1–4pt，最后仍冲突的标记为设计性叠放并记录；尽量不要靠缩字号解决，以免破坏同用途一致性。
 - 字号、字库（latin/ea/cs）、加粗、斜体、对齐参与统一；**颜色按「强调色」体系归一**：一般文本 `normal`（黑）、小标题 `weak`（弱强调，主题深蓝）、行内/关键词突出 `strong`（强强调，红）、目录当前项 `accent`（主题强调蓝）。模板入库时从全稿统计出 `text_colors`，合成时按用途套用；源稿里不属于这四类的颜色（例如用于对应图中元素的橙色 `#ED7D31`）保持原样，留给后续的「对应色」机制。
 - **对应色（概念，暂未应用）**：解释图片内容时，文字可复用图中该元素的颜色（如图中橙色部分用橙色文字）。`text_colors.corresponding` 已预留字段，当前不做自动匹配。
 - 引用/文献用结构化字段，不要手工拼格式：`{"annotation": "citation", "citation": {"journal": "Nat. Mater.", "year": "2021", "volume": "21", "pages": "503"}}` 会按 catalog 渲染成期刊名斜体、年份加粗、卷号斜体、页码常规并居中。引用识别要接受 7–8 位文章编号（如 `2314419`）与 e-locator（如 `e2304567`），否则会漏成 caption 导致格式不一致；引用按单行渲染（不换行），与图下文献条目的原设计一致。

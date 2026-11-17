@@ -1,3 +1,3 @@
 """Shared, host-independent Research Style Skill Suite runtime."""
 
-__version__ = "0.9.1"
+__version__ = "0.10.0"

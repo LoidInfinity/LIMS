@@ -445,7 +445,7 @@ def _add_text_item(slide, left_mm, top_mm, box, item, module_index, item_index,
         wrap = False
     joined = "\n".join(_paragraph_text(paragraph) for paragraph in paragraphs)
     needed = _text_height_mm(joined, width_mm - 1.0, size, wrap=wrap)
-    if needed > height_mm + 0.5:
+    if needed > height_mm + 0.5 and not item.get("allow_overflow"):
         raise ValueError(f"Module {module_index} item {item_index}: text needs {needed:.1f} mm but its box is "
                          f"{height_mm:.1f} mm high; enlarge the box, shorten the text or lower font_pt")
     shape = slide.shapes.add_textbox(Mm(left_mm), Mm(top_mm), Mm(width_mm), Mm(height_mm))
@@ -583,6 +583,39 @@ def _add_panels(slide, panels, base_dir, index, role_styles=True, catalog=None):
     return summary
 
 
+CITATION_INSET_MM = 2.0
+CITATION_GAP_MM = 6.0
+
+
+def _citation_boxes(citations, inner):
+    """References share one row anchored to the module's bottom-left corner.
+
+    Every citation keeps the same offset from the corner and they are spread
+    evenly, so a module with several figure references stays tidy instead of
+    stacking them in the same spot."""
+    if not citations:
+        return {}
+    rows = [citations]
+    line_h = max(size for size, _ in citations) * 1.35 * 25.4 / 72
+    available = inner[2] - 2 * CITATION_INSET_MM
+    minimum = 20.0
+    per_row = max(1, int((available + CITATION_GAP_MM) // (minimum + CITATION_GAP_MM)))
+    if per_row < len(citations):
+        rows = [citations[index:index + per_row] for index in range(0, len(citations), per_row)]
+    layout = {}
+    row_heights = [max(size for size, _ in row) * 1.35 * 25.4 / 72 for row in rows]
+    top_offset = inner[1] + inner[3] - CITATION_INSET_MM
+    for row_index, row in enumerate(rows):
+        top_offset -= row_heights[row_index]
+        count = len(row)
+        width = (available - (count - 1) * CITATION_GAP_MM) / count
+        for column, (_, item_id) in enumerate(row):
+            left = inner[0] + CITATION_INSET_MM + column * (width + CITATION_GAP_MM)
+            layout[item_id] = [left, top_offset, width, row_heights[row_index]]
+        top_offset -= CITATION_GAP_MM
+    return layout
+
+
 def _add_modules(slide, modules, base_dir, index, role_styles=True, catalog=None):
     from pptx.dml.color import RGBColor
     from pptx.enum.dml import MSO_LINE_DASH_STYLE
@@ -664,11 +697,18 @@ def _add_modules(slide, modules, base_dir, index, role_styles=True, catalog=None
                 if _overlaps(first_box, second_box):
                     raise ValueError(f"Page {index}: module {module_index} items overlap; "
                                      f"mark one item 'overlay': true only if the design intends it")
+        citations = [(float(item.get("font_pt") or 12.0), id(item))
+                     for item, _ in boxes if item.get("annotation") == "citation"]
+        citation_layout = _citation_boxes(citations, inner)
         for item_index, (item, box) in enumerate(boxes, 1):
-            left = inner[0] + box[0] * inner[2]
-            top = inner[1] + box[1] * inner[3]
-            size = (box[2] * inner[2], box[3] * inner[3])
-            target = (left, top, size[0], size[1])
+            if item.get("annotation") == "citation":
+                left, top, width_mm, height_mm = citation_layout[id(item)]
+                target = (left, top, width_mm, height_mm)
+            else:
+                left = inner[0] + box[0] * inner[2]
+                top = inner[1] + box[1] * inner[3]
+                size = (box[2] * inner[2], box[3] * inner[3])
+                target = (left, top, size[0], size[1])
             if "text" in item or "paragraphs" in item or "citation" in item:
                 placed_shape = _add_text_item(slide, left, top, target, item, module_index, item_index,
                                               role_styles, catalog)
@@ -823,6 +863,12 @@ def build(template_dir, spec, output, force=False):
     catalog = merge_styles(document.get("text_styles") or descriptor.get("text_styles"))
     palette = merge_text_colors(document.get("text_colors") or descriptor.get("text_colors"),
                                 document.get("text_colors") or descriptor.get("text_colors"))
+    for annotation, alignment in (("display", "center"), ("heading", "left"), ("subheading", "left"),
+                                  ("body", "left"), ("body_large", "left"), ("bullet", "left"),
+                                  ("caption", "center"), ("citation", "left"), ("note", "left"),
+                                  ("label", "left"), ("data_label", "center")):
+        entry = catalog.setdefault(annotation, {})
+        entry["align"] = alignment
     for annotation, role in (("heading", "weak"), ("subheading", "weak"), ("body", "normal"),
                              ("body_large", "normal"), ("bullet", "normal"), ("caption", "normal"),
                              ("note", "normal"), ("label", "normal"), ("data_label", "strong"),

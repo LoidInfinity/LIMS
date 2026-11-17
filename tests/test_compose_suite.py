@@ -365,7 +365,13 @@ class ComposeTests(unittest.TestCase):
         self.assertTrue(segments[2].font.bold)        # year bold
         self.assertTrue(segments[4].font.italic)      # volume italic
         self.assertEqual(segments[0].font.size.pt, 12.0)
-        self.assertEqual(citation.text_frame.paragraphs[0].alignment, PP_ALIGN.CENTER)
+        # References are left aligned and anchored to the module's bottom-left.
+        self.assertEqual(citation.text_frame.paragraphs[0].alignment, PP_ALIGN.LEFT)
+        module_left, module_top, module_width, module_height = 10.0, 45.0, 300.0, 80.0
+        # Anchored near the module's left edge and bottom band.
+        self.assertAlmostEqual(citation.left / 36000, module_left + 2.0, delta=0.6)
+        self.assertGreater((citation.top + citation.height) / 36000,
+                           module_top + module_height * 0.75)
 
         disabled = dict(page)
         compose(target, {"template": descriptor["id"], "role_styles": False, "pages": [disabled]},
