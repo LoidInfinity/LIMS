@@ -385,6 +385,7 @@ def text_payload(shape, colors, fonts, default_pt=18, catalog=None, palette=None
               round(frame.margin_right / EMU_MM, 3), round(frame.margin_bottom / EMU_MM, 3)]
     alignment = next((p.alignment for p in paragraphs if p.alignment is not None), None)
     align = ROLE_ALIGN.get(alignment.name) if alignment is not None else None
+    wrap_setting = frame.word_wrap
     anchor_name = frame.vertical_anchor
     anchor = {"TOP": "top", "MIDDLE": "middle", "BOTTOM": "bottom"}.get(anchor_name.name) if anchor_name else None
     if catalog:
@@ -392,6 +393,8 @@ def text_payload(shape, colors, fonts, default_pt=18, catalog=None, palette=None
         if citation:
             payload = {"annotation": "citation", "citation": citation, "insets_mm": insets,
                        "font_pt": float(catalog.get("citation", {}).get("font_pt", 12))}
+            if wrap_setting is False:
+                payload["word_wrap"] = False
             if align:
                 payload["align"] = align
             if anchor:
@@ -438,6 +441,8 @@ def text_payload(shape, colors, fonts, default_pt=18, catalog=None, palette=None
             spec_paragraphs.append(spec)
         payload = {"annotation": annotation, "paragraphs": spec_paragraphs,
                    "font_pt": float(style.get("font_pt", size)), "insets_mm": insets}
+        if wrap_setting is False:
+            payload["word_wrap"] = False
         if item_color:
             item_role = color_role_for(item_color, palette)
             if item_role:
@@ -631,7 +636,7 @@ def analyse_slide(slide, number, colors, assets, asset_prefix, size_mm, padding=
                 for key in ("text", "paragraphs", "role", "annotation", "citation", "font_pt",
                             "bold", "italic", "color", "color_role", "align", "anchor", "font_latin",
                             "font_cjk", "font_cs", "bullet", "line_spacing_pct", "space_after_pt",
-                            "insets_mm"):
+                            "insets_mm", "word_wrap"):
                     if key in item:
                         payload[key] = item[key]
                 payload.setdefault("font_pt", 18)

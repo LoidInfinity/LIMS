@@ -424,6 +424,26 @@ class ComposeTests(unittest.TestCase):
         self.assertEqual(colors["正文"], "#000000")     # normal
         self.assertEqual(colors["对应色占位"], "#ED7D31")  # raw colour wins
 
+    def test_citation_renders_single_line_in_tight_box(self):
+        from pptx import Presentation
+        descriptor, target = self.template()
+        spec = {"template": descriptor["id"], "pages": [{
+            "layout": self.layout_index(descriptor, "Title and Content"), "title": "引用",
+            "modules": [{"rect": [10, 45, 300, 60], "padding_mm": 2.0, "items": [
+                {"box": [0, 0, 0.3, 0.12], "annotation": "citation",
+                 "citation": {"journal": "Adv. Funct. Mater.", "year": "2024",
+                              "volume": "34", "pages": "2314419"}}]}]}]}
+        output = self.root / "cite-line.pptx"
+        compose(target, spec, output)
+        slide = Presentation(str(output)).slides[0]
+        shape = next(shape for shape in slide.shapes
+                     if shape.has_text_frame and "Adv. Funct." in shape.text_frame.text)
+        self.assertFalse(shape.text_frame.word_wrap, "citations stay on one line")
+        runs = shape.text_frame.paragraphs[0].runs
+        self.assertEqual(runs[0].font.size.pt, 12.0)
+        self.assertTrue(runs[0].font.italic)   # journal
+        self.assertTrue(runs[2].font.bold)    # year
+
     def test_fitted_textbox_centers_rewritten_text(self):
         from pptx import Presentation
         from pptx.enum.text import PP_ALIGN

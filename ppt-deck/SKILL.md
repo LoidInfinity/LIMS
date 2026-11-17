@@ -2,7 +2,7 @@
 name: ppt-deck
 description: 按共享科研风格或某所高校的既有模板制作可编辑 PPTX，用于组会、学术汇报和研究结果展示；支持从一份 PPTX 提取模板入库、保留封面/目录等页面原型并逐像素复现，也支持按学校、标签、比例和版式检索调用。
 metadata:
-  version: "0.9.0"
+  version: "0.9.1"
 ---
 
 # 科研汇报 PPT
@@ -89,7 +89,8 @@ python ../../tools/extract_media.py deck.pptx --slide 3 --output assets/slide03
 - **先判断用途，再决定格式**：每个文本框带 `annotation`（display / heading / subheading / body / body_large / bullet / caption / citation / note / label / page_number），每个 run 还可带细分标注（`emphasis`、`superscript`、`subscript`；引用框拆成 journal / year / volume / pages）。模板入库时会从全篇统计**同一用途的众数格式**，写进 `template.json` 的 `text_styles`；合成时按注释查表统一套用，所以两个引用框不会一个 10pt、一个 12pt，也不会字体各异。
 - 字号、字库（latin/ea/cs）、加粗、斜体、对齐参与统一；**颜色按「强调色」体系归一**：一般文本 `normal`（黑）、小标题 `weak`（弱强调，主题深蓝）、行内/关键词突出 `strong`（强强调，红）、目录当前项 `accent`（主题强调蓝）。模板入库时从全稿统计出 `text_colors`，合成时按用途套用；源稿里不属于这四类的颜色（例如用于对应图中元素的橙色 `#ED7D31`）保持原样，留给后续的「对应色」机制。
 - **对应色（概念，暂未应用）**：解释图片内容时，文字可复用图中该元素的颜色（如图中橙色部分用橙色文字）。`text_colors.corresponding` 已预留字段，当前不做自动匹配。
-- 引用/文献用结构化字段，不要手工拼格式：`{"annotation": "citation", "citation": {"journal": "Nat. Mater.", "year": "2021", "volume": "21", "pages": "503"}}` 会按 catalog 渲染成期刊名斜体、年份加粗、卷号斜体、页码常规并居中。
+- 引用/文献用结构化字段，不要手工拼格式：`{"annotation": "citation", "citation": {"journal": "Nat. Mater.", "year": "2021", "volume": "21", "pages": "503"}}` 会按 catalog 渲染成期刊名斜体、年份加粗、卷号斜体、页码常规并居中。引用识别要接受 7–8 位文章编号（如 `2314419`）与 e-locator（如 `e2304567`），否则会漏成 caption 导致格式不一致；引用按单行渲染（不换行），与图下文献条目的原设计一致。
+- 短数值/单位标签（如 `9 kPa`、`1.82 mV/K`）归为 `data_label`：加粗 + 强强调色，避免被误判成小标题而变色。
 - **上标下标是格式不是字体**：用普通字体 + run 属性 `baseline`（上标 `30000`，下标 `-25000`），不要用 Unicode 上标字符或专用「上标字体」。行内斜体、加粗、颜色用 `paragraphs[].runs` 逐段表达，例如 `{"text": "Fe(CN)"}, {"text": "6", "baseline": -25000}, {"text": "3-", "baseline": 30000}`。
 
 ## 双板块与留白率

@@ -110,7 +110,7 @@ python tools/analyze_page.py "开题.pptx" --slide 4 --slide 5 --assets assets/a
 {"annotation": "citation", "citation": {"journal": "Nat. Mater.", "year": "2021", "volume": "21", "pages": "503"}}
 ```
 
-渲染为期刊名斜体、年份加粗、卷号斜体、页码常规并居中（各部分的斜体/加粗规则也来自 `text_styles.citation.parts`）。run 可带 `emphasis` / `superscript` / `subscript` 标注，上下标用 `baseline` 属性实现。spec 顶层也可给 `text_styles` 覆盖模板值。
+渲染为期刊名斜体、年份加粗、卷号斜体、页码常规并居中（各部分的斜体/加粗规则也来自 `text_styles.citation.parts`）。引用识别支持 7–8 位文章编号与 e-locator，渲染为单行；块内短数值标签用 `data_label`（加粗 + 强强调色）。run 可带 `emphasis` / `superscript` / `subscript` 标注，上下标用 `baseline` 属性实现。spec 顶层也可给 `text_styles` 覆盖模板值。
 
 ## 强调色与页面复用
 

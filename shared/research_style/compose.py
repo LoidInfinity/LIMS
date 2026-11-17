@@ -79,9 +79,12 @@ def _text_width_mm(text, font_pt):
     return _text_em(text) * font_pt * 25.4 / 72
 
 
-def _text_height_mm(text, width_mm, font_pt, line_factor=1.35):
-    per_line = max(1.0, width_mm / (font_pt * 25.4 / 72))
-    lines = sum(max(1, math.ceil(_text_em(line) / per_line)) for line in text.split("\n"))
+def _text_height_mm(text, width_mm, font_pt, line_factor=1.35, wrap=True):
+    if not wrap:
+        lines = max(1, len(text.split("\n")))
+    else:
+        per_line = max(1.0, width_mm / (font_pt * 25.4 / 72))
+        lines = sum(max(1, math.ceil(_text_em(line) / per_line)) for line in text.split("\n"))
     return lines * font_pt * line_factor * 25.4 / 72
 
 
@@ -435,14 +438,19 @@ def _add_text_item(slide, left_mm, top_mm, box, item, module_index, item_index,
     _role_color(style, palette)
     width_mm, height_mm = box[2], box[3]
     size = style.get("font_pt", 16)
+    wrap = item.get("word_wrap", True) is not False
+    if citation:
+        # References under figures are single-line labels; wrapping them would
+        # break the tight caption band the source design relies on.
+        wrap = False
     joined = "\n".join(_paragraph_text(paragraph) for paragraph in paragraphs)
-    needed = _text_height_mm(joined, width_mm - 1.0, size)
+    needed = _text_height_mm(joined, width_mm - 1.0, size, wrap=wrap)
     if needed > height_mm + 0.5:
         raise ValueError(f"Module {module_index} item {item_index}: text needs {needed:.1f} mm but its box is "
                          f"{height_mm:.1f} mm high; enlarge the box, shorten the text or lower font_pt")
     shape = slide.shapes.add_textbox(Mm(left_mm), Mm(top_mm), Mm(width_mm), Mm(height_mm))
     frame = shape.text_frame
-    frame.word_wrap = True
+    frame.word_wrap = wrap
     insets = item.get("insets_mm")
     if isinstance(insets, list) and len(insets) == 4:
         frame.margin_left, frame.margin_top = Mm(float(insets[0])), Mm(float(insets[1]))
@@ -817,7 +825,8 @@ def build(template_dir, spec, output, force=False):
                                 document.get("text_colors") or descriptor.get("text_colors"))
     for annotation, role in (("heading", "weak"), ("subheading", "weak"), ("body", "normal"),
                              ("body_large", "normal"), ("bullet", "normal"), ("caption", "normal"),
-                             ("note", "normal"), ("label", "normal"), ("emphasis", "strong")):
+                             ("note", "normal"), ("label", "normal"), ("data_label", "strong"),
+                             ("emphasis", "strong")):
         entry = catalog.setdefault(annotation, {})
         entry.setdefault("color_role", role)
     catalog["_palette"] = palette

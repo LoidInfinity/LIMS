@@ -31,6 +31,8 @@ DEFAULT_TEXT_STYLES = {
                  "font_latin": "Calibri", "font_cjk": "宋体", "font_cs": "Calibri",
                  "parts": {"journal": {"italic": True}, "year": {"bold": True},
                            "volume": {"italic": True}, "pages": {}, "separator": {}}},
+    "data_label": {"font_pt": 18, "bold": True, "align": "center",
+                   "font_latin": "Calibri", "font_cjk": "Calibri", "font_cs": "Calibri"},
     "note": {"font_pt": 10, "color": "#595959",
              "font_latin": "Calibri", "font_cjk": "宋体", "font_cs": "Calibri"},
     "label": {"font_pt": 9, "color": "#404040",
@@ -117,9 +119,14 @@ def derive_text_colors(presentation, skip_indices=(), palette=None):
     return result
 
 
+# Page numbers are not always <= 6 digits: article-style references use 7-8
+# digit article numbers (e.g. Adv. Funct. Mater. 2024, 34, 2314419), and some
+# publishers use e-locators (e2304567).
+PAGE_TOKEN = r"(?:\d{1,8}|[eE]\d{4,10})"
 CITATION_RE = re.compile(
     r"^(?P<journal>[A-Z][A-Za-z&.'\- ]{1,60}?)\s*(?P<year>(?:19|20)\d{2})\s*,\s*"
-    r"(?P<volume>[0-9A-Za-z]{1,12}?)\s*,\s*(?P<pages>\d{1,6}(?:\s*[\u2013\-]\s*\d{1,6})?)\.?$")
+    r"(?P<volume>[0-9A-Za-z]{1,12}?)\s*,\s*(?P<pages>" + PAGE_TOKEN +
+    r"(?:\s*[\u2013\-]\s*" + PAGE_TOKEN + r")?)\.?$")
 
 
 def parse_citation(text):
@@ -142,6 +149,9 @@ def classify(text, size_pt, bold, bulleted=False, italic=False):
         return None
     if parse_citation(stripped):
         return "citation"
+    if (len(stripped) <= 16 and re.search(r"\d", stripped)
+            and re.fullmatch(r"[\d.,\s%+\-\u2013/]*\s?[A-Za-z\u00b5\u03bc\u00b0%/]{0,8}", stripped)):
+        return "data_label"
     if bold and size_pt >= 20:
         return "display"
     if bold and size_pt >= 15:

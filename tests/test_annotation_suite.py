@@ -48,6 +48,11 @@ class AnnotationTests(unittest.TestCase):
             "Therm. Sci. Eng. Prog. 2023, 46, 102244.": ("Therm. Sci. Eng. Prog.", "2023", "46", "102244"),
             "EnergyChem 2024, 6, 100123.": ("EnergyChem", "2024", "6", "100123"),
             "Science 2020, 368, 1091.": ("Science", "2020", "368", "1091"),
+            # Article-style references use 7-digit article numbers.
+            "Adv. Funct. Mater. 2024, 34, 2314419.": ("Adv. Funct. Mater.", "2024", "34", "2314419"),
+            "Adv. Funct. Mater. 2022, 32, 2208286.": ("Adv. Funct. Mater.", "2022", "32", "2208286"),
+            "Energy Environ. Sci. 2023, 16, 1234-1245": ("Energy Environ. Sci.", "2023", "16", "1234-1245"),
+            "Matter 2024, 7, e2304567": ("Matter", "2024", "7", "e2304567"),
         }
         for text, expected in cases.items():
             parsed = parse_citation(text)
@@ -65,6 +70,9 @@ class AnnotationTests(unittest.TestCase):
         self.assertEqual(classify("一段正文", 18, False), "body_large")
         self.assertEqual(classify("一段正文", 14, False), "body")
         self.assertEqual(classify("小注释", 10.5, False), "note")
+        self.assertEqual(classify("9 kPa", 18, True), "data_label")
+        self.assertEqual(classify("1.82 mV/K", 18, True), "data_label")
+        self.assertEqual(classify("2024", 18, True), "data_label")
         self.assertIsNone(classify("   ", 12, False))
 
     def test_run_annotation(self):
@@ -78,8 +86,10 @@ class AnnotationTests(unittest.TestCase):
         from pptx import Presentation
         catalog = merge_styles(derive_text_styles(Presentation(deck)))
         citation = catalog["citation"]
-        # Two citation boxes at 10 pt and 14 pt collapse to one canonical size.
-        self.assertIn(citation["font_pt"], (10.0, 14.0))
+        # Citation boxes at 10/12/14 pt collapse to one canonical size, including
+        # the 7-digit article-number reference.
+        self.assertIn(citation["font_pt"], (10.0, 12.0, 14.0))
+        self.assertIn("parts", citation)
         self.assertEqual(citation["parts"]["year"], {"bold": True})
         self.assertEqual(citation["parts"]["journal"], {"italic": True})
         self.assertEqual(catalog["heading"]["font_pt"], 16.0)
