@@ -809,11 +809,12 @@ def _repair_collisions(entries, notes=None):
                 if candidate[0] < inner[0] or candidate[0] + candidate[2] > inner[0] + inner[2]:
                     continue
                 if not _intersects(candidate, other_rect):
+                    left = shape.left + _Mm(candidate[0] - rect[0])
+                    top = shape.top + _Mm(candidate[1] - rect[1])
+                    shape.left, shape.top = left, top
+                    payload["box"][0] += (candidate[0] - rect[0]) / inner[2]
+                    payload["box"][1] += (candidate[1] - rect[1]) / inner[3]
                     rect[0], rect[1] = candidate[0], candidate[1]
-                    shape.left = _Mm(rect[0])
-                    shape.top = _Mm(rect[1])
-                    payload["box"] = [(rect[0] - inner[0]) / inner[2], (rect[1] - inner[1]) / inner[3],
-                                      rect[2] / inner[2], rect[3] / inner[3]]
                     moved = True
                     break
             if moved:

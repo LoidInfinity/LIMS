@@ -135,34 +135,51 @@ def text_ink_rect(box, text, style, insets=(0.0, 0.0, 0.0, 0.0), line_spacing_pc
     inner_w = max(0.1, box_w - float(insets[0]) - float(insets[2]))
     inner_h = max(0.1, box_h - float(insets[1]) - float(insets[3]))
     spacing = 1.0 if not line_spacing_pct else float(line_spacing_pct) / 100
+    em_mm = font_pt * 25.4 / 72
     if wrap:
         wrapped = _wrap_by_measure(text, inner_w * 72 / 25.4, font_pt, latin, cjk)
         scale = font_pt / 1000
         width_mm = max((sum((_font(cjk) if unicodedata.east_asian_width(char) in "WF" else _font(latin))
                             .getlength(char) for char in line) for line in wrapped), default=0.0)
         width_mm = width_mm * scale * 25.4 / 72
-        height_mm = max(1, len(wrapped)) * font_pt * 1.22 * 25.4 / 72 * spacing
+        lines = max(1, len(wrapped))
     else:
-        width_mm, height_mm = measure_text(text, font_pt, latin, cjk)
-        height_mm *= spacing
+        width_mm, _ = measure_text(text, font_pt, latin, cjk)
+        lines = max(1, len((text or "").split("\n")))
+    # Calibrated on rendered slides: glyph ink starts ~0.20em below the line top
+    # and is ~0.93em tall; consecutive lines advance by 1.2em.
+    glyph_offset_mm = 0.20 * em_mm
+    glyph_height_mm = 0.93 * em_mm + (lines - 1) * 1.2 * em_mm * spacing
+    line_box_mm = (lines - 1) * 1.2 * em_mm * spacing + em_mm
+    height_mm = glyph_height_mm
     spacing = 1.0 if not line_spacing_pct else float(line_spacing_pct) / 100
     height_mm *= spacing
     align = style.get("align") or "left"
     anchor = style.get("anchor") or "top"
     left, top, box_w, box_h = box
+    # A paragraph bullet is drawn inside the indent area: text starts at marL,
+    # the bullet glyph itself usually at marL + indent (negative indent).
+    bullet = style.get("bullet") if isinstance(style.get("bullet"), dict) else None
+    text_offset = float(bullet.get("mar_l_mm", 0.0)) if bullet else 0.0
+    bullet_offset = (text_offset + float(bullet.get("indent_mm", 0.0))) if bullet else 0.0
+    ink_offset = min(text_offset, bullet_offset)
+    available = max(0.5, inner_w - text_offset)
     if align == "center":
-        ink_left = inner_left + (inner_w - width_mm) / 2
+        text_left = inner_left + text_offset + (available - width_mm) / 2
     elif align == "right":
-        ink_left = inner_left + inner_w - width_mm
+        text_left = inner_left + text_offset + available - width_mm
     else:
-        ink_left = inner_left
+        text_left = inner_left + text_offset
+    ink_left = min(text_left, inner_left + bullet_offset) if bullet else text_left
+    ink_width = (text_left + width_mm) - ink_left
     if anchor == "middle":
-        ink_top = inner_top + (inner_h - height_mm) / 2
+        content_top = inner_top + (inner_h - line_box_mm) / 2
     elif anchor == "bottom":
-        ink_top = inner_top + inner_h - height_mm
+        content_top = inner_top + inner_h - line_box_mm
     else:
-        ink_top = inner_top
-    return [ink_left, ink_top, width_mm, height_mm]
+        content_top = inner_top
+    ink_top = content_top + glyph_offset_mm
+    return [ink_left, ink_top, ink_width, height_mm]
 
 
 DEFAULT_TEXT_COLORS = {"normal": "#000000", "weak": "#1F3864", "strong": "#C00000",
@@ -343,6 +360,7 @@ def payload_collision_rect(payload, box):
         "font_cjk": payload.get("font_cjk") or "黑体",
         "align": payload.get("align") or "left",
         "anchor": payload.get("anchor") or "top",
+        "bullet": payload.get("bullet"),
     }
     insets = payload.get("insets_mm") or [0.0, 0.0, 0.0, 0.0]
     return text_ink_rect(list(box), payload_text(payload), style, insets,

@@ -110,6 +110,23 @@ class AnnotationTests(unittest.TestCase):
         self.assertEqual(parts, ["journal", "separator", "year", "separator",
                                  "volume", "separator", "pages", "separator"])
 
+    def test_ink_border_bullets_and_glyph_metrics(self):
+        from research_style.annotation import text_ink_rect
+        em = 16 * 25.4 / 72
+        plain = text_ink_rect([10, 10, 100, 30], "研究背景",
+                              {"font_pt": 16, "font_latin": "黑体", "font_cjk": "黑体"})
+        self.assertAlmostEqual(plain[1], 10 + 0.2 * em, delta=0.1)
+        self.assertAlmostEqual(plain[3], 0.93 * em, delta=0.1)
+        bulleted = text_ink_rect(
+            [10, 10, 100, 30], "研究背景",
+            {"font_pt": 16, "font_latin": "黑体", "font_cjk": "黑体",
+             "bullet": {"mar_l_mm": 7.938, "indent_mm": -7.938}},
+            [2.54, 1.27, 2.54, 1.27])
+        # The bullet sits at the bullet offset; the text starts marL later, so the
+        # ink border must include that indent (this used to clip the right edge).
+        self.assertAlmostEqual(bulleted[0], 10 + 2.54, delta=0.1)
+        self.assertAlmostEqual(bulleted[2], 7.938 + 4 * em, delta=0.2)
+
     def test_emphasis_color_roles(self):
         from research_style.annotation import (DEFAULT_TEXT_COLORS, color_role_for,
                                                derive_text_colors, merge_text_colors)
