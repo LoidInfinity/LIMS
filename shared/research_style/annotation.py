@@ -10,6 +10,7 @@ emphasis, and super/subscripts.
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections import Counter
 
 DEFAULT_TEXT_STYLES = {
@@ -45,6 +46,93 @@ DEFAULT_TEXT_STYLES = {
     "superscript": {"baseline": 30000},
     "subscript": {"baseline": -25000},
 }
+
+
+_FONT_PATHS = {
+    "黑体": ("simhei.ttf",),
+    "宋体": ("simsun.ttc",),
+    "微软雅黑": ("msyh.ttc",),
+    "Calibri": ("calibri.ttf", "calibrib.ttf"),
+    "Arial": ("arial.ttf", "arialbd.ttf"),
+    "Times New Roman": ("times.ttf", "timesbd.ttf"),
+    "DejaVu Sans": ("DejaVuSans.ttf",),
+}
+_FONT_CACHE = {}
+
+
+def _font(name, size=1000):
+    import os
+    from pathlib import Path as _Path
+    from PIL import ImageFont
+    key = (name, size)
+    if key in _FONT_CACHE:
+        return _FONT_CACHE[key]
+    base = _Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
+    font = None
+    for directory in (base, _Path("/usr/share/fonts/truetype/dejavu")):
+        for filename in _FONT_PATHS.get(name, ()):
+            candidate = directory / filename
+            if candidate.is_file():
+                try:
+                    font = ImageFont.truetype(str(candidate), size)
+                    break
+                except OSError:
+                    continue
+        if font is not None:
+            break
+    if font is None:
+        try:
+            font = ImageFont.truetype("DejaVuSans.ttf", size)
+        except OSError:
+            font = ImageFont.load_default()
+    _FONT_CACHE[key] = font
+    return font
+
+
+def measure_text(text, font_pt, latin="Calibri", cjk="黑体"):
+    """Ink size of a text block in mm: the actual glyph extent, not the box."""
+    lines = text.split("\n") if text else [""]
+    width_pt = 0.0
+    for line in lines:
+        total = 0.0
+        for char in line:
+            font = _font(cjk) if unicodedata.east_asian_width(char) in "WF" else _font(latin)
+            total += font.getlength(char)
+        width_pt = max(width_pt, total)
+    scale = font_pt / 1000
+    line_pt = font_pt * 1.22
+    return width_pt * scale * 25.4 / 72, len(lines) * line_pt * 25.4 / 72
+
+
+def text_ink_rect(box, text, style, insets=(0.0, 0.0, 0.0, 0.0), line_spacing_pct=None):
+    """Where the glyphs actually sit inside a text box (alignment + anchor)."""
+    font_pt = float(style.get("font_pt") or style.get("size_pt") or 14)
+    latin = style.get("font_latin") or "Calibri"
+    cjk = style.get("font_cjk") or "黑体"
+    width_mm, height_mm = measure_text(text, font_pt, latin, cjk)
+    spacing = 1.0 if not line_spacing_pct else float(line_spacing_pct) / 100
+    height_mm *= spacing
+    align = style.get("align") or "left"
+    anchor = style.get("anchor") or "top"
+    left, top, box_w, box_h = box
+    inner_left = left + float(insets[0])
+    inner_top = top + float(insets[1])
+    inner_w = max(0.1, box_w - float(insets[0]) - float(insets[2]))
+    inner_h = max(0.1, box_h - float(insets[1]) - float(insets[3]))
+    if align == "center":
+        ink_left = inner_left + (inner_w - width_mm) / 2
+    elif align == "right":
+        ink_left = inner_left + inner_w - width_mm
+    else:
+        ink_left = inner_left
+    if anchor == "middle":
+        ink_top = inner_top + (inner_h - height_mm) / 2
+    elif anchor == "bottom":
+        ink_top = inner_top + inner_h - height_mm
+    else:
+        ink_top = inner_top
+    return [ink_left, ink_top, width_mm, height_mm]
+
 
 DEFAULT_TEXT_COLORS = {"normal": "#000000", "weak": "#1F3864", "strong": "#C00000",
                        "accent": "#1F8DCF", "corresponding": None}

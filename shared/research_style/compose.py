@@ -14,8 +14,8 @@ import math
 from pathlib import Path
 import unicodedata
 
-from .annotation import (citation_segments, merge_styles, merge_text_colors, part_style,
-                         style_for)
+from .annotation import (citation_segments, measure_text, merge_styles, merge_text_colors,
+                         part_style, style_for)
 from .core import atomic_bytes, preflight_outputs, read_json, write_json
 from .template import DESCRIPTOR_NAME, descriptor_sha256, load_descriptor, template_root
 
@@ -563,8 +563,13 @@ def _add_image_item(slide, left_mm, top_mm, box, item, module_index, item_index,
     box_w, box_h = box[2], box[3]
     width = min(box_w, box_h * ratio)
     height = width / ratio
-    return slide.shapes.add_picture(str(source), Mm(left_mm + (box_w - width) / 2),
-                                    Mm(top_mm + (box_h - height) / 2), Mm(width), Mm(height))
+    picture = slide.shapes.add_picture(str(source), Mm(left_mm + (box_w - width) / 2),
+                                       Mm(top_mm + (box_h - height) / 2), Mm(width), Mm(height))
+    crop = item.get("crop") or {}
+    for side in ("left", "top", "right", "bottom"):
+        if crop.get(side):
+            setattr(picture, "crop_" + side, float(crop[side]))
+    return picture
 
 
 PANEL_RATIOS = {"equal": 1.0, "golden": 1.618, "sqrt2": 1.414, "silver": 2.414, "double": 2.0}
@@ -639,6 +644,59 @@ def _add_panels(slide, panels, base_dir, index, role_styles=True, catalog=None):
 
 CITATION_INSET_MM = 2.0
 CITATION_GAP_MM = 6.0
+CITATION_IMAGE_GAP_MM = 1.2
+
+
+def _citation_line_height(item):
+    return float(item.get("font_pt") or 12) * 1.35 * 25.4 / 72
+
+
+def _citation_plan(boxes, inner, layout):
+    """Where each reference goes: under its figure, or merged at the frame corner."""
+    citations = [(index, item, box) for index, (item, box) in enumerate(boxes)
+                 if item.get("annotation") == "citation"]
+    images = [(item, box) for item, box in boxes if "image" in item]
+    targets, leftovers = {}, []
+    for index, item, box in citations:
+        line_h = _citation_line_height(item)
+        if layout == "below_image" and images:
+            cite_rect = [inner[0] + box[0] * inner[2], inner[1] + box[1] * inner[3],
+                         box[2] * inner[2], box[3] * inner[3]]
+            best, best_score = None, None
+            for image_item, image_box in images:
+                image_rect = [inner[0] + image_box[0] * inner[2], inner[1] + image_box[1] * inner[3],
+                              image_box[2] * inner[2], image_box[3] * inner[3]]
+                gap = cite_rect[1] - (image_rect[1] + image_rect[3])
+                centre_gap = abs((cite_rect[0] + cite_rect[2] / 2) - (image_rect[0] + image_rect[2] / 2))
+                if -3.0 <= gap <= 25.0 and centre_gap <= max(25.0, image_rect[2] * 0.7):
+                    score = abs(gap) + centre_gap * 0.5
+                    if best_score is None or score < best_score:
+                        best, best_score = image_rect, score
+            if best is not None:
+                width = min(best[2], inner[0] + inner[2] - best[0] - CITATION_INSET_MM)
+                top = best[1] + best[3] + CITATION_IMAGE_GAP_MM
+                if top + line_h <= inner[1] + inner[3] - 0.5:
+                    targets[id(item)] = [best[0], top, max(12.0, width), line_h]
+                    continue
+        leftovers.append((index, item))
+    if leftovers:
+        row = _citation_boxes([(float(item.get("font_pt") or 12), id(item))
+                               for _, item in leftovers], inner)
+        for _, item in leftovers:
+            targets.setdefault(id(item), row[id(item)])
+    return targets
+
+
+def _merge_citations(items):
+    """One text box holding every reference line, anchored to the frame corner."""
+    paragraphs = []
+    for item in items:
+        segments = citation_segments(item.get("citation") or {})
+        paragraphs.append({"runs": [{"text": text_value, "annotation": part}
+                                    for part, text_value in segments]})
+    return {"annotation": "citation", "citation": items[0].get("citation"),
+            "paragraphs": paragraphs, "font_pt": items[0].get("font_pt", 12),
+            "word_wrap": False, "allow_overflow": True}
 
 
 def _citation_boxes(citations, inner):
@@ -670,7 +728,8 @@ def _citation_boxes(citations, inner):
     return layout
 
 
-def _add_modules(slide, modules, base_dir, index, role_styles=True, catalog=None):
+def _add_modules(slide, modules, base_dir, index, role_styles=True, catalog=None,
+                 citation_layout="below_image"):
     from pptx.dml.color import RGBColor
     from pptx.enum.dml import MSO_LINE_DASH_STYLE
     from pptx.enum.shapes import MSO_SHAPE
@@ -751,12 +810,28 @@ def _add_modules(slide, modules, base_dir, index, role_styles=True, catalog=None
                 if _overlaps(first_box, second_box):
                     raise ValueError(f"Page {index}: module {module_index} items overlap; "
                                      f"mark one item 'overlay': true only if the design intends it")
-        citations = [(float(item.get("font_pt") or 12.0), id(item))
-                     for item, _ in boxes if item.get("annotation") == "citation"]
-        citation_layout = _citation_boxes(citations, inner)
+        mode = module.get("citation_layout") or citation_layout
+        if mode == "frame_corner" and any(item.get("annotation") == "citation" for item, _ in boxes):
+            citation_items = [item for item, _ in boxes if item.get("annotation") == "citation"]
+            boxes = [(item, box) for item, box in boxes if item.get("annotation") != "citation"]
+            merged = _merge_citations(citation_items)
+            boxes.append((merged, [0.0, 0.0, 0.0, 0.0]))
+            merged_lines = len(citation_items)
+            line_h = _citation_line_height(merged)
+            width = max(measure_text("".join(_paragraph_text(p) for p in merged["paragraphs"]),
+                                     float(merged.get("font_pt") or 12))[0] + 4.0, 20.0)
+            top = inner[1] + inner[3] - CITATION_INSET_MM - merged_lines * line_h
+            cite_target = (inner[0] + CITATION_INSET_MM, top,
+                           min(width, inner[2] - 2 * CITATION_INSET_MM), merged_lines * line_h)
+        else:
+            plan = _citation_plan(boxes, inner, mode)
+            cite_target = None
         for item_index, (item, box) in enumerate(boxes, 1):
             if item.get("annotation") == "citation":
-                left, top, width_mm, height_mm = citation_layout[id(item)]
+                if cite_target is not None:
+                    left, top, width_mm, height_mm = cite_target
+                else:
+                    left, top, width_mm, height_mm = plan[id(item)]
                 target = (left, top, width_mm, height_mm)
             else:
                 left = inner[0] + box[0] * inner[2]
@@ -803,7 +878,7 @@ def _apply_title_style(shape, style):
 
 
 def _add_layout_page(prs, layout, page, index, title_style=None, title_xml=None, base_dir=None,
-                     role_styles=True, catalog=None):
+                     role_styles=True, catalog=None, citation_layout="below_image"):
     from pptx.enum.shapes import PP_PLACEHOLDER
     from pptx.util import Mm, Pt
     slide = prs.slides.add_slide(layout)
@@ -857,7 +932,8 @@ def _add_layout_page(prs, layout, page, index, title_style=None, title_xml=None,
     elif modules:
         if body:
             raise ValueError(f"Page {index}: use 'modules' or 'body', not both")
-        page["_module_summary"] = _add_modules(slide, modules, base_dir or Path.cwd(), index, role_styles, catalog)
+        page["_module_summary"] = _add_modules(slide, modules, base_dir or Path.cwd(), index, role_styles, catalog,
+                         citation_layout)
     return slide
 
 
@@ -954,7 +1030,8 @@ def build(template_dir, spec, output, force=False):
             content_style = descriptor.get("content_style", {})
             slide = _add_layout_page(presentation, layout, page, index, content_style.get("title"),
                                      content_style.get("title_xml"), base_dir,
-                                     bool(page.get("role_styles", default_role_styles)), catalog)
+                                     bool(page.get("role_styles", default_role_styles)), catalog,
+                                     document.get("citation_layout", "below_image"))
             order.append(slide)
             record = {"page": index, "kind": "layout", "layout": layout.name,
                       "title": page.get("title", "")}

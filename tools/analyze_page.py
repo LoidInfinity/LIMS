@@ -22,7 +22,8 @@ SHARED = Path(__file__).resolve().parents[1] / "shared"
 if str(SHARED) not in sys.path:
     sys.path.insert(0, str(SHARED))
 from research_style.annotation import (classify, color_role_for, load_catalog,
-                                       merge_text_colors, parse_citation, run_annotation)
+                                       merge_text_colors, parse_citation, run_annotation,
+                                       text_ink_rect)
 import colorsys
 
 P = "http://schemas.openxmlformats.org/presentationml/2006/main"
@@ -584,6 +585,23 @@ def _citation_band(inner, font_pt=12.0):
     return [inner[0], top, inner[2], inner[1] + inner[3] - top]
 
 
+
+def _payload_ink(payload, rect, inner):
+    """Actual glyph extent for text payloads; images use their placement rect."""
+    if "paragraphs" not in payload and "text" not in payload:
+        return rect
+    plain = payload_plain_text(payload) if "paragraphs" in payload else payload.get("text", "")
+    style = {
+        "font_pt": payload.get("font_pt") or 14,
+        "font_latin": payload.get("font_latin") or "Calibri",
+        "font_cjk": payload.get("font_cjk") or "黑体",
+        "align": payload.get("align") or "left",
+        "anchor": payload.get("anchor") or "top",
+    }
+    insets = payload.get("insets_mm") or [0.0, 0.0, 0.0, 0.0]
+    return text_ink_rect(rect, plain, style, insets, payload.get("line_spacing_pct"))
+
+
 def _box_mm(box, inner):
     return [inner[0] + box[0] * inner[2], inner[1] + box[1] * inner[3],
             box[2] * inner[2], box[3] * inner[3]]
@@ -808,7 +826,15 @@ def analyse_slide(slide, number, colors, assets, asset_prefix, size_mm, padding=
             blob = image.blob
             if not target.is_file() or hashlib.sha256(target.read_bytes()).hexdigest() != hashlib.sha256(blob).hexdigest():
                 target.write_bytes(blob)
-            items.append({"rect": rect, "image": f"{asset_prefix}/{target.name}"})
+            crop = {}
+            for side in ("left", "top", "right", "bottom"):
+                value = getattr(shape, "crop_" + side, None)
+                if value:
+                    crop[side] = round(float(value), 4)
+            item = {"rect": rect, "image": f"{asset_prefix}/{target.name}"}
+            if crop:
+                item["crop"] = crop
+            items.append(item)
             continue
         if shape.has_text_frame:
             payload = text_payload(shape, colors, fonts or {}, catalog=catalog, palette=palette)
@@ -878,8 +904,14 @@ def analyse_slide(slide, number, colors, assets, asset_prefix, size_mm, padding=
                     if key in item:
                         payload[key] = item[key]
                 payload.setdefault("font_pt", 18)
+            ink = _payload_ink(payload, [box[0] * inner[2] + inner[0], box[1] * inner[3] + inner[1],
+                                         box[2] * inner[2], box[3] * inner[3]], inner)
             for existing_payload, existing_box in boxes:
-                if overlap(box, existing_box, tolerance=0.0005):
+                existing_ink = _payload_ink(existing_payload,
+                                            [existing_box[0] * inner[2] + inner[0],
+                                             existing_box[1] * inner[3] + inner[1],
+                                             existing_box[2] * inner[2], existing_box[3] * inner[3]], inner)
+                if _boxes_overlap(ink, existing_ink, tolerance=0.2):
                     if "image" in existing_payload or "image" in payload:
                         payload["overlay"] = True
                     break
