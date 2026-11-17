@@ -2,7 +2,7 @@
 name: ppt-deck
 description: 按共享科研风格或某所高校的既有模板制作可编辑 PPTX，用于组会、学术汇报和研究结果展示；支持从一份 PPTX 提取模板入库、保留封面/目录等页面原型并逐像素复现，也支持按学校、标签、比例和版式检索调用。
 metadata:
-  version: "0.5.0"
+  version: "0.6.0"
 ---
 
 # 科研汇报 PPT
@@ -83,6 +83,7 @@ python ../../tools/extract_media.py deck.pptx --slide 3 --output assets/slide03
 - 边框默认是**直角**。原稿常用 `roundRect` 但把圆角值设为 0，渲染就是直角；需要圆角时显式写 `"radius_mm": 3`。
 - 合成会强制内容留在边框内侧：越界、文字超出自身盒子、item 相互重叠（除非显式 `"overlay": true`）都会报错，不会静默压到虚线上。
 - 版式用 `query_template.py show` 的清单确定索引；同名版式存在于多套母版时必须用索引。批量复现时按页记录真实版式（`tools/analyze_page.py` 会输出每页的 `layout_part` 与标题 XML），不要把探针页的版式和标题位置套到所有页。
+- 字体要分别保留 **latin（英文与数字）/ ea（中文）/ cs（复杂文种）** 三套字库；OOXML 里数字跟随 latin，不要用中文字体去渲染数字。项目符号要从段落 `a:pPr` 取 `a:buFont` + `a:buChar`（本库模板的小标题用的是 Wingdings `Ø`，渲染成三角箭头，不是圆点），不能统一写成 `• ` 前缀；`a:buSzPct`、`marL/indent` 一并保留。
 
 ## 双板块与留白率
 

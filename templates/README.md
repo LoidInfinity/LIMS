@@ -96,7 +96,9 @@ python tools/analyze_page.py "开题.pptx" --slide 4 --slide 5 --assets assets/a
   --spec spec-auto.json --layout 17 --template scut-kaituo-16x9
 ```
 
-它按 XML 读出每页的虚线框（`prst`/圆角值/线型/线宽）、底色（含透明度）、图片与文本（字号/颜色含 lumMod/项目符号），并逐页记录真实版式与标题 XML；同名版式位于不同母版时索引不同，工具会按页区分。
+它按 XML 读出每页的虚线框（`prst`/圆角值/线型/线宽）、底色（含透明度）、图片与文本（字号、字体、颜色含 lumMod、项目符号），并逐页记录真实版式与标题 XML；同名版式位于不同母版时索引不同，工具会按页区分。
+
+文本项保留三套字库：`font_latin`（英文与数字）、`font_cjk`（中文）、`font_cs`（复杂文种），主题字体别名（`+mn-lt` 等）会先解析成实际字面名。项目符号取段落的 `a:buFont`/`a:buChar`（本库模板小标题是 Wingdings `Ø`，渲染为三角箭头），连同 `a:buSzPct` 与 `marL/indent` 一起写回，而不是用 `• ` 前缀冒充。
 
 ## 双板块与留白率
 

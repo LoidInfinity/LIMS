@@ -36,13 +36,18 @@ def make_deck(path, image):
     slide.shapes.add_picture(str(image), Inches(2.2), Inches(2.2), Inches(2), Inches(1))
     box = slide.shapes.add_textbox(Inches(2), Inches(6), Inches(6), Inches(1))
     paragraph = box.text_frame.paragraphs[0]
-    paragraph._p.get_or_add_pPr().append(parse_xml('<a:buChar %s char="l"/>' % nsdecls("a")))
+    properties = paragraph._p.get_or_add_pPr()
+    properties.append(parse_xml('<a:buFont %s typeface="Wingdings"/>' % nsdecls("a")))
+    properties.append(parse_xml('<a:buChar %s char="&#216;"/>' % nsdecls("a")))
     run = paragraph.add_run()
     run.text = "要点一"
     run.font.size = Pt(18)
-    run._r.get_or_add_rPr().append(parse_xml(
+    run_properties = run._r.get_or_add_rPr()
+    run_properties.append(parse_xml(
         '<a:solidFill %s><a:schemeClr val="accent1"><a:lumMod val="50000"/></a:schemeClr></a:solidFill>'
         % nsdecls("a")))
+    for tag, face in (("latin", "黑体"), ("ea", "黑体"), ("cs", "Calibri")):
+        run_properties.append(parse_xml('<a:%s %s typeface="%s"/>' % (tag, nsdecls("a"), face)))
     presentation.save(path)
     return path
 
@@ -86,8 +91,15 @@ class AnalyzeTests(unittest.TestCase):
         self.assertTrue(images)
         self.assertTrue(images[0].startswith("assets/"))
         self.assertTrue((assets / Path(images[0]).name).is_file())
-        texts = [item["text"] for item in items if "text" in item]
-        self.assertTrue(any(text.startswith("• ") for text in texts), texts)
+        texts = [item for item in items if "text" in item]
+        self.assertTrue(texts)
+        sample = next(item for item in texts if "要点一" in item["text"])
+        self.assertNotIn("• ", sample["text"], "bullet glyphs belong to the paragraph, not the text")
+        self.assertEqual(sample["bullet"]["char"], "\u00d8")
+        self.assertEqual(sample["bullet"]["font"], "Wingdings")
+        self.assertEqual(sample["font_latin"], "黑体")
+        self.assertEqual(sample["font_cjk"], "黑体")
+        self.assertEqual(sample["font_cs"], "Calibri")
         colored = [item for item in items if item.get("color")]
         self.assertTrue(colored)
         # accent1 with lumMod 50% must resolve to the darker shade, not #4472C4.

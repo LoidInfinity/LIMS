@@ -308,6 +308,34 @@ class ComposeTests(unittest.TestCase):
         self.assertIsNotNone(alpha)
         self.assertEqual(alpha.get("val"), "15000")
 
+    def test_text_item_carries_fonts_and_bullet(self):
+        from pptx import Presentation
+        from pptx.oxml.ns import qn
+        descriptor, target = self.template()
+        item = {"box": [0, 0, 1, 0.5], "text": "要点一", "font_pt": 18,
+                "font_latin": "黑体", "font_cjk": "黑体", "font_cs": "Calibri",
+                "bullet": {"char": "\u00d8", "font": "Wingdings", "size_pct": 80,
+                           "mar_l_mm": 5.0, "indent_mm": -5.0}}
+        spec = {"template": descriptor["id"], "pages": [{
+            "layout": self.layout_index(descriptor, "Title and Content"), "title": "字体",
+            "modules": [{"rect": [10, 45, 150, 60], "padding_mm": 2.0, "items": [item]}]}]}
+        output = self.root / "fonts.pptx"
+        compose(target, spec, output)
+        slide = Presentation(str(output)).slides[0]
+        shape = next(shape for shape in slide.shapes
+                     if shape.has_text_frame and shape.text_frame.text.strip() == "要点一")
+        run = shape.text_frame.paragraphs[0].runs[0]
+        self.assertEqual(run.font.name, "黑体")
+        properties = run._r.find(qn("a:rPr"))
+        self.assertEqual(properties.find(qn("a:ea")).get("typeface"), "黑体")
+        self.assertEqual(properties.find(qn("a:cs")).get("typeface"), "Calibri")
+        paragraph = shape.text_frame.paragraphs[0]._p.find(qn("a:pPr"))
+        self.assertEqual(paragraph.find(qn("a:buChar")).get("char"), "\u00d8")
+        self.assertEqual(paragraph.find(qn("a:buFont")).get("typeface"), "Wingdings")
+        self.assertEqual(paragraph.find(qn("a:buSzPct")).get("val"), "80000")
+        self.assertEqual(paragraph.get("marL"), str(int(5.0 * 36000)))
+        self.assertEqual(paragraph.get("indent"), str(int(-5.0 * 36000)))
+
     def test_fitted_textbox_centers_rewritten_text(self):
         from pptx import Presentation
         from pptx.enum.text import PP_ALIGN

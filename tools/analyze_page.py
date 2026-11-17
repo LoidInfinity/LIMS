@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Turn source slides into compose page specs by reading their real geometry.
 
 Frames (dashed/solid outlines), pictures and text are extracted with their
@@ -222,36 +222,131 @@ def corner_radius(shape):
     return round(max(0.0, int(match.group(1)) / 100000) * min(rect[2], rect[3]), 2)
 
 
-def text_payload(shape, colors, default_pt=18):
+FONT_ALIASES = {"+mn-lt": "minor_latin", "+mj-lt": "major_latin",
+                "+mn-ea": "minor_ea", "+mj-ea": "major_ea",
+                "+mn-cs": "minor_cs", "+mj-cs": "major_cs"}
+
+
+def theme_fonts(path):
+    fonts = {}
+    with zipfile.ZipFile(path) as archive:
+        names = [name for name in archive.namelist() if re.fullmatch(r"ppt/theme/theme\d+\.xml", name)]
+        if not names:
+            return fonts
+        root = ET.fromstring(archive.read(sorted(names)[0]))
+    for kind in ("major", "minor"):
+        for tag in ("latin", "ea", "cs"):
+            node = root.find(".//a:fontScheme/a:%sFont/a:%s" % (kind, tag), NS)
+            if node is not None and node.get("typeface"):
+                fonts["%s_%s" % (kind, tag)] = node.get("typeface")
+    return fonts
+
+
+def resolve_typeface(value, fonts):
+    if not value:
+        return None
+    if value.startswith("+"):
+        return fonts.get(FONT_ALIASES.get(value, ""))
+    return value
+
+
+def bullet_of(paragraph, colors):
+    from pptx.oxml.ns import qn
+    properties = paragraph._p.find(qn("a:pPr"))
+    if properties is None:
+        return None
+    char = properties.find(qn("a:buChar"))
+    auto = properties.find(qn("a:buAutoNum"))
+    if char is None and auto is None:
+        return None
+    record = {}
+    if char is not None:
+        record["char"] = char.get("char")
+    else:
+        record["auto_num"] = auto.get("type")
+    font = properties.find(qn("a:buFont"))
+    if font is not None and font.get("typeface"):
+        record["font"] = font.get("typeface")
+    size = properties.find(qn("a:buSzPct"))
+    if size is not None:
+        try:
+            record["size_pct"] = round(int(size.get("val")) / 1000, 1)
+        except (TypeError, ValueError):
+            pass
+    color = properties.find(qn("a:buClr"))
+    if color is not None:
+        for child in color:
+            value, _ = resolve_color(child, colors)
+            if value:
+                record["color"] = value
+            break
+    for attribute, key in (("marL", "mar_l_mm"), ("indent", "indent_mm")):
+        value = properties.get(attribute)
+        if value is not None:
+            try:
+                record[key] = round(int(value) / EMU_MM, 3)
+            except ValueError:
+                pass
+    return record
+
+
+def paragraph_spacing(paragraph):
+    from pptx.oxml.ns import qn
+    properties = paragraph._p.find(qn("a:pPr"))
+    if properties is None:
+        return {}
+    record = {}
+    line = properties.find(qn("a:lnSpc"))
+    if line is not None:
+        percent = line.find(qn("a:spcPct"))
+        if percent is not None:
+            record["line_spacing_pct"] = round(int(percent.get("val")) / 1000, 1)
+    after = properties.find(qn("a:spcAft"))
+    if after is not None:
+        points = after.find(qn("a:spcPts"))
+        if points is not None:
+            record["space_after_pt"] = round(int(points.get("val")) / 100, 1)
+    return record
+
+
+def text_payload(shape, colors, fonts, default_pt=18):
     from pptx.oxml.ns import qn
     paragraphs = shape.text_frame.paragraphs
-    bulleted = any(paragraph._p.find(qn("a:pPr")) is not None
-                   and paragraph._p.find(qn("a:pPr")).find(qn("a:buChar")) is not None
-                   for paragraph in paragraphs)
-    lines = []
-    for paragraph in paragraphs:
-        text = paragraph.text
-        lines.append(f"• {text}" if bulleted and text.strip() else text)
+    lines = [paragraph.text for paragraph in paragraphs]
     text = "\n".join(lines).rstrip("\n")
     if not text.strip():
         return None
     first_run = next((run for paragraph in paragraphs for run in paragraph.runs if run.text.strip()), None)
     size = first_run.font.size.pt if first_run is not None and first_run.font.size else default_pt
     payload = {"text": text, "font_pt": round(size, 1)}
-    if first_run is not None and first_run.font.bold:
-        payload["bold"] = True
-    if first_run is not None and first_run.font.italic:
-        payload["italic"] = True
-    color = run_color(first_run, colors) if first_run is not None else None
-    if color:
-        payload["color"] = color
-    alignment = next((p.alignment for p in shape.text_frame.paragraphs if p.alignment is not None), None)
+    if first_run is not None:
+        run_properties = first_run._r.find(qn("a:rPr"))
+        if run_properties is not None:
+            for tag, key in (("latin", "font_latin"), ("ea", "font_cjk"), ("cs", "font_cs")):
+                node = run_properties.find(qn("a:" + tag))
+                value = resolve_typeface(node.get("typeface") if node is not None else None, fonts)
+                if value:
+                    payload[key] = value
+        if first_run.font.bold:
+            payload["bold"] = True
+        if first_run.font.italic:
+            payload["italic"] = True
+        color = run_color(first_run, colors)
+        if color:
+            payload["color"] = color
+    alignment = next((p.alignment for p in paragraphs if p.alignment is not None), None)
     if alignment is not None:
         payload["align"] = {"LEFT": "left", "CENTER": "center", "RIGHT": "right",
                             "JUSTIFY": "justify"}.get(alignment.name, "left")
     anchor = shape.text_frame.vertical_anchor
     if anchor is not None:
         payload["anchor"] = {"TOP": "top", "MIDDLE": "middle", "BOTTOM": "bottom"}.get(anchor.name, "top")
+    for paragraph in paragraphs:
+        bullet = bullet_of(paragraph, colors)
+        if bullet:
+            payload["bullet"] = bullet
+            break
+    payload.update(paragraph_spacing(paragraphs[0]))
     return payload
 
 
@@ -310,7 +405,7 @@ def fit_text(payload, rect, inner):
     return rect
 
 
-def analyse_slide(slide, number, colors, assets, asset_prefix, size_mm, padding=1.0):
+def analyse_slide(slide, number, colors, assets, asset_prefix, size_mm, padding=1.0, fonts=None):
     from lxml import etree
     from pptx.enum.shapes import MSO_SHAPE_TYPE
     width_mm, height_mm = size_mm
@@ -344,7 +439,7 @@ def analyse_slide(slide, number, colors, assets, asset_prefix, size_mm, padding=
             items.append({"rect": rect, "image": f"{asset_prefix}/{target.name}"})
             continue
         if shape.has_text_frame:
-            payload = text_payload(shape, colors)
+            payload = text_payload(shape, colors, fonts or {})
             if payload is not None:
                 items.append({"rect": rect, **payload})
     modules = [{"rect": frame["rect"], "padding_mm": padding, "border": frame["border"],
@@ -385,7 +480,9 @@ def analyse_slide(slide, number, colors, assets, asset_prefix, size_mm, padding=
             if "image" in item:
                 payload["image"] = item["image"]
             else:
-                for key in ("text", "font_pt", "bold", "italic", "color", "align", "anchor"):
+                for key in ("text", "font_pt", "bold", "italic", "color", "align", "anchor",
+                            "font_latin", "font_cjk", "font_cs", "bullet",
+                            "line_spacing_pct", "space_after_pt"):
                     if key in item:
                         payload[key] = item[key]
                 payload.setdefault("font_pt", 18)
@@ -407,11 +504,13 @@ def build_spec(deck_path, slides, assets, asset_prefix, layout, template=None, r
     presentation = Presentation(str(deck_path))
     size_mm = (presentation.slide_width / EMU_MM, presentation.slide_height / EMU_MM)
     colors = theme_colors(deck_path)
+    fonts = theme_fonts(deck_path)
     pages, raw = [], []
     for number in slides:
         if not 1 <= number <= len(presentation.slides):
             raise ValueError(f"Slide {number} is out of range")
-        analysis = analyse_slide(presentation.slides[number - 1], number, colors, assets, asset_prefix, size_mm)
+        analysis = analyse_slide(presentation.slides[number - 1], number, colors, assets, asset_prefix,
+                                 size_mm, fonts=fonts)
         page = {"layout": layout, "layout_part": analysis["layout_part"], "modules": analysis["modules"]}
         if analysis["title"].strip():
             page["title"] = analysis["title"]

@@ -215,9 +215,51 @@ def _set_run_style(run, item):
         run.font.color.rgb = RGBColor.from_string(item["color"].lstrip("#"))
 
 
+def _apply_fonts(run, item):
+    """Write the latin (English/digits), CJK and complex-script typefaces."""
+    from xml.sax.saxutils import escape
+    from pptx.oxml import parse_xml
+    from pptx.oxml.ns import nsdecls, qn
+    latin = item.get("font_latin")
+    cjk = item.get("font_cjk")
+    cs = item.get("font_cs")
+    if latin:
+        run.font.name = latin
+    properties = run._r.get_or_add_rPr()
+    for tag, value in (("ea", cjk), ("cs", cs)):
+        if not value:
+            continue
+        existing = properties.find(qn("a:" + tag))
+        if existing is not None:
+            properties.remove(existing)
+        properties.append(parse_xml('<a:%s %s typeface="%s"/>' % (tag, nsdecls("a"), escape(str(value)))))
+
+
+def _apply_bullet(paragraph, bullet):
+    from xml.sax.saxutils import escape
+    from pptx.oxml import parse_xml
+    from pptx.oxml.ns import nsdecls
+    properties = paragraph._p.get_or_add_pPr()
+    for key, attribute in (("mar_l_mm", "marL"), ("indent_mm", "indent")):
+        if bullet.get(key) is not None:
+            properties.set(attribute, str(int(round(float(bullet[key]) * 36000))))
+    fragments = []
+    if bullet.get("color"):
+        fragments.append('<a:buClr %s><a:srgbClr val="%s"/></a:buClr>'
+                         % (nsdecls("a"), escape(str(bullet["color"]).lstrip("#"))))
+    if bullet.get("size_pct"):
+        fragments.append('<a:buSzPct %s val="%d"/>' % (nsdecls("a"), int(round(float(bullet["size_pct"]) * 1000))))
+    if bullet.get("font"):
+        fragments.append('<a:buFont %s typeface="%s"/>' % (nsdecls("a"), escape(str(bullet["font"]))))
+    if bullet.get("char"):
+        fragments.append('<a:buChar %s char="%s"/>' % (nsdecls("a"), escape(str(bullet["char"]))))
+    for fragment in fragments:
+        properties.append(parse_xml(fragment))
+
+
 def _add_text_item(slide, left_mm, top_mm, box, item, module_index, item_index):
     from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
-    from pptx.util import Mm
+    from pptx.util import Mm, Pt
     text = item.get("text")
     if not isinstance(text, str) or not text.strip():
         raise ValueError(f"Module {module_index} item {item_index}: text item needs nonempty 'text'")
@@ -233,13 +275,21 @@ def _add_text_item(slide, left_mm, top_mm, box, item, module_index, item_index):
     frame.margin_left = frame.margin_right = Mm(0.6)
     frame.margin_top = frame.margin_bottom = Mm(0.3)
     frame.vertical_anchor = getattr(MSO_ANCHOR, (item.get("anchor") or "middle").upper())
+    bullet = item.get("bullet") if isinstance(item.get("bullet"), dict) else None
     lines = text.split("\n")
     for position, line in enumerate(lines):
         paragraph = frame.paragraphs[0] if position == 0 else frame.add_paragraph()
         paragraph.alignment = getattr(PP_ALIGN, ALIGNMENTS.get(item.get("align", "left"), "LEFT"))
+        if item.get("line_spacing_pct"):
+            paragraph.line_spacing = float(item["line_spacing_pct"]) / 100
+        if item.get("space_after_pt") is not None:
+            paragraph.space_after = Pt(float(item["space_after_pt"]))
+        if bullet:
+            _apply_bullet(paragraph, bullet)
         run = paragraph.add_run()
         run.text = line
         _set_run_style(run, item)
+        _apply_fonts(run, item)
     return shape
 
 
