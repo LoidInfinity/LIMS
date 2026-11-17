@@ -127,6 +127,16 @@ class AnnotationTests(unittest.TestCase):
         self.assertAlmostEqual(bulleted[0], 10 + 2.54, delta=0.1)
         self.assertAlmostEqual(bulleted[2], 7.938 + 4 * em, delta=0.2)
 
+    def test_ink_border_line_spacing_and_trailing_paragraph(self):
+        from research_style.annotation import text_ink_rect
+        em = 16 * 25.4 / 72
+        rect = text_ink_rect([0, 0, 120, 80], "第一行\n第二行\n",
+                             {"font_pt": 16, "font_latin": "黑体", "font_cjk": "黑体"},
+                             (0, 0, 0, 0), 150.0)
+        # 150% line spacing must be applied once, and the trailing empty
+        # paragraph must not add another inked line.
+        self.assertAlmostEqual(rect[3], 0.93 * em + 1.2 * em * 1.5, delta=0.25)
+
     def test_emphasis_color_roles(self):
         from research_style.annotation import (DEFAULT_TEXT_COLORS, color_role_for,
                                                derive_text_colors, merge_text_colors)
