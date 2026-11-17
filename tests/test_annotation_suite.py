@@ -100,6 +100,24 @@ class AnnotationTests(unittest.TestCase):
         self.assertEqual(parts, ["journal", "separator", "year", "separator",
                                  "volume", "separator", "pages", "separator"])
 
+    def test_emphasis_color_roles(self):
+        from research_style.annotation import (DEFAULT_TEXT_COLORS, color_role_for,
+                                               derive_text_colors, merge_text_colors)
+        palette = merge_text_colors({"weak": "#002060", "strong": "#C00000", "accent": "#1F8DCF"})
+        self.assertEqual(palette["normal"], "#000000")
+        self.assertEqual(color_role_for("#000000", palette), "normal")
+        self.assertEqual(color_role_for("#002060", palette), "weak")
+        self.assertEqual(color_role_for("#C00000", palette), "strong")
+        self.assertEqual(color_role_for("#1F8DCF", palette), "accent")
+        # An orange correspondence colour has no role yet: keep it raw.
+        self.assertIsNone(color_role_for("#ED7D31", palette))
+        self.assertIsNone(DEFAULT_TEXT_COLORS["corresponding"])
+        deck = make_deck(self.root / "deck.pptx")
+        from pptx import Presentation
+        colors = derive_text_colors(Presentation(deck))
+        for role in ("normal", "weak", "strong", "accent"):
+            self.assertIn(role, colors)
+
 
 if __name__ == "__main__":
     unittest.main()

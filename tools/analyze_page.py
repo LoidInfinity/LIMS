@@ -21,7 +21,8 @@ from xml.etree import ElementTree as ET
 SHARED = Path(__file__).resolve().parents[1] / "shared"
 if str(SHARED) not in sys.path:
     sys.path.insert(0, str(SHARED))
-from research_style.annotation import classify, load_catalog, parse_citation, run_annotation
+from research_style.annotation import (classify, color_role_for, load_catalog,
+                                       merge_text_colors, parse_citation, run_annotation)
 import colorsys
 
 P = "http://schemas.openxmlformats.org/presentationml/2006/main"
@@ -374,7 +375,7 @@ def infer_role(paragraphs, size, bold):
     return "body"
 
 
-def text_payload(shape, colors, fonts, default_pt=18, catalog=None):
+def text_payload(shape, colors, fonts, default_pt=18, catalog=None, palette=None):
     from pptx.oxml.ns import qn
     frame = shape.text_frame
     paragraphs = list(frame.paragraphs)
@@ -419,7 +420,11 @@ def text_payload(shape, colors, fonts, default_pt=18, catalog=None):
                 baseline = properties.get("baseline") if properties is not None else None
                 color = run_color(run, colors)
                 if color and color != item_color:
-                    record["color"] = color
+                    role = color_role_for(color, palette)
+                    if role:
+                        record["color_role"] = role
+                    else:
+                        record["color"] = color
                 run_name = run_annotation(color, item_color, baseline,
                                           bool(run.font.bold), base_bold)
                 if run_name:
@@ -434,7 +439,11 @@ def text_payload(shape, colors, fonts, default_pt=18, catalog=None):
         payload = {"annotation": annotation, "paragraphs": spec_paragraphs,
                    "font_pt": float(style.get("font_pt", size)), "insets_mm": insets}
         if item_color:
-            payload["color"] = item_color
+            item_role = color_role_for(item_color, palette)
+            if item_role:
+                payload["color_role"] = item_role
+            else:
+                payload["color"] = item_color
         if align:
             payload["align"] = align
         if anchor:
@@ -544,7 +553,7 @@ def fit_text(payload, rect, inner):
 
 
 def analyse_slide(slide, number, colors, assets, asset_prefix, size_mm, padding=1.0, fonts=None,
-                  catalog=None):
+                  catalog=None, palette=None):
     from lxml import etree
     from pptx.enum.shapes import MSO_SHAPE_TYPE
     width_mm, height_mm = size_mm
@@ -578,7 +587,7 @@ def analyse_slide(slide, number, colors, assets, asset_prefix, size_mm, padding=
             items.append({"rect": rect, "image": f"{asset_prefix}/{target.name}"})
             continue
         if shape.has_text_frame:
-            payload = text_payload(shape, colors, fonts or {}, catalog=catalog)
+            payload = text_payload(shape, colors, fonts or {}, catalog=catalog, palette=palette)
             if payload is not None:
                 items.append({"rect": rect, **payload})
     modules = [{"rect": frame["rect"], "padding_mm": padding, "border": frame["border"],
@@ -620,8 +629,9 @@ def analyse_slide(slide, number, colors, assets, asset_prefix, size_mm, padding=
                 payload["image"] = item["image"]
             else:
                 for key in ("text", "paragraphs", "role", "annotation", "citation", "font_pt",
-                            "bold", "italic", "color", "align", "anchor", "font_latin", "font_cjk",
-                            "font_cs", "bullet", "line_spacing_pct", "space_after_pt", "insets_mm"):
+                            "bold", "italic", "color", "color_role", "align", "anchor", "font_latin",
+                            "font_cjk", "font_cs", "bullet", "line_spacing_pct", "space_after_pt",
+                            "insets_mm"):
                     if key in item:
                         payload[key] = item[key]
                 payload.setdefault("font_pt", 18)
@@ -639,7 +649,7 @@ def analyse_slide(slide, number, colors, assets, asset_prefix, size_mm, padding=
 
 
 def build_spec(deck_path, slides, assets, asset_prefix, layout, template=None, report=None,
-               catalog=None):
+               catalog=None, palette=None):
     from pptx import Presentation
     presentation = Presentation(str(deck_path))
     size_mm = (presentation.slide_width / EMU_MM, presentation.slide_height / EMU_MM)
@@ -650,7 +660,7 @@ def build_spec(deck_path, slides, assets, asset_prefix, layout, template=None, r
         if not 1 <= number <= len(presentation.slides):
             raise ValueError(f"Slide {number} is out of range")
         analysis = analyse_slide(presentation.slides[number - 1], number, colors, assets, asset_prefix,
-                                 size_mm, fonts=fonts, catalog=catalog)
+                                 size_mm, fonts=fonts, catalog=catalog, palette=palette)
         page = {"layout": layout, "layout_part": analysis["layout_part"], "modules": analysis["modules"]}
         if analysis["title"].strip():
             page["title"] = analysis["title"]
@@ -687,10 +697,16 @@ def main():
     except ValueError:
         prefix = str(assets)
     catalog = load_catalog(args.catalog) if args.catalog else None
+    palette = None
+    if args.catalog:
+        import json as _json
+        data = _json.loads(args.catalog.read_text(encoding="utf-8-sig"))
+        palette = merge_text_colors(data.get("text_colors"))
     spec = build_spec(args.presentation.expanduser().resolve(), sorted(set(args.slide)),
-                      assets, prefix, args.layout, args.template, args.report, catalog)
+                      assets, prefix, args.layout, args.template, args.report, catalog, palette)
     if catalog:
         spec["text_styles"] = catalog
+        spec["text_colors"] = palette
     args.spec.write_text(json.dumps(spec, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"{args.spec}  ({len(spec['pages'])} page(s))")
     for page in spec["pages"]:

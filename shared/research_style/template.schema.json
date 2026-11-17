@@ -289,6 +289,32 @@
         }
       }
     },
+    "text_colors": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "normal": {
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}$"
+        },
+        "weak": {
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}$"
+        },
+        "strong": {
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}$"
+        },
+        "accent": {
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}$"
+        },
+        "corresponding": {
+          "type": ["string", "null"],
+          "pattern": "^#[0-9A-Fa-f]{6}$"
+        }
+      }
+    },
     "text_styles": {
       "type": "object",
       "maxProperties": 40,

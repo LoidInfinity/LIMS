@@ -128,8 +128,8 @@ class ComposeTests(unittest.TestCase):
         layout = self.layout_index(descriptor, "Title and Content")
         cases = [
             ({"template": descriptor["id"], "pages": [{"prototype": "nope"}]}, "unknown prototype"),
-            ({"template": descriptor["id"], "pages": [{"prototype": "cover"}, {"prototype": "cover"}]},
-             "cannot be used twice"),
+            ({"template": descriptor["id"], "pages": [{"prototype": "cover"}, {"prototype": "nope"}]},
+             "unknown prototype"),
             ({"template": "other-template", "pages": [{"prototype": "cover"}]}, "targets template"),
             ({"template": descriptor["id"], "pages": [{"prototype": "cover", "layout": layout}]}, "exactly one"),
             ({"template": descriptor["id"], "pages": []}, "nonempty"),
@@ -375,6 +375,54 @@ class ComposeTests(unittest.TestCase):
                               if shape.has_text_frame and "Nat. Mater." in shape.text_frame.text)
         # Catalog styles still apply; role defaults are what role_styles turns off.
         self.assertEqual(plain_citation.text_frame.paragraphs[0].runs[0].font.size.pt, 12.0)
+
+    def test_prototype_reuse_clones_the_slide(self):
+        from PIL import Image
+        from pptx import Presentation
+        image = self.root / "logo.png"
+        Image.new("RGB", (40, 20), (10, 120, 200)).save(image)
+        descriptor, target = self.template(image=image)
+        title_slot = next(slot for slot in descriptor["prototypes"][0]["text_slots"]
+                          if slot["text"] == TITLE_TOKEN)
+        spec = {"template": descriptor["id"], "pages": [
+            {"prototype": "cover"},
+            {"prototype": "cover", "texts": {str(title_slot["shape_id"]): "第二份封面"}},
+        ]}
+        output = self.root / "cloned.pptx"
+        manifest, _ = compose(target, spec, output)
+        self.assertEqual([page["clone"] for page in manifest["pages"]], [False, True])
+        presentation = Presentation(str(output))
+        self.assertEqual(len(presentation.slides), 2)
+        self.assertEqual(presentation.slides[1].shapes.title.text_frame.text, "第二份封面")
+        pictures = [shape for shape in presentation.slides[1].shapes if shape.shape_type == 13]
+        self.assertTrue(pictures, "cloned slide must keep its picture relationship")
+        self.assertEqual(pictures[0].image.size, (40, 20))
+
+    def test_emphasis_color_roles(self):
+        from pptx import Presentation
+        descriptor, target = self.template()
+        layout = self.layout_index(descriptor, "Title and Content")
+        spec = {"template": descriptor["id"],
+                "text_colors": {"weak": "#002060", "strong": "#C00000",
+                                "normal": "#000000", "accent": "#1F8DCF"},
+                "pages": [{"layout": layout, "title": "颜色", "modules": [
+                    {"rect": [10, 45, 300, 80], "padding_mm": 2.0, "items": [
+                        {"box": [0, 0, 1, 0.3], "annotation": "heading", "text": "小标题"},
+                        {"box": [0, 0.35, 1, 0.3], "annotation": "body", "text": "正文"},
+                        {"box": [0, 0.7, 1, 0.3], "annotation": "body", "color": "#ED7D31",
+                         "text": "对应色占位"}]}]}]}
+        output = self.root / "colors.pptx"
+        compose(target, spec, output)
+        slide = Presentation(str(output)).slides[0]
+        colors = {}
+        for shape in slide.shapes:
+            if not shape.has_text_frame or not shape.text_frame.text.strip():
+                continue
+            run = shape.text_frame.paragraphs[0].runs[0]
+            colors[shape.text_frame.text] = "#" + str(run.font.color.rgb)
+        self.assertEqual(colors["小标题"], "#002060")   # weak emphasis
+        self.assertEqual(colors["正文"], "#000000")     # normal
+        self.assertEqual(colors["对应色占位"], "#ED7D31")  # raw colour wins
 
     def test_fitted_textbox_centers_rewritten_text(self):
         from pptx import Presentation

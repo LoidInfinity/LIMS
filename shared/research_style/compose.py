@@ -14,7 +14,8 @@ import math
 from pathlib import Path
 import unicodedata
 
-from .annotation import citation_segments, merge_styles, part_style, style_for
+from .annotation import (citation_segments, merge_styles, merge_text_colors, part_style,
+                         style_for)
 from .core import atomic_bytes, preflight_outputs, read_json, write_json
 from .template import DESCRIPTOR_NAME, descriptor_sha256, load_descriptor, template_root
 
@@ -52,7 +53,12 @@ def _set_shape_text(shape, text):
     while len(paragraphs) < len(lines):
         frame._txBody.append(copy.deepcopy(paragraphs[-1]._p))
         paragraphs = list(frame.paragraphs)
+    from pptx.oxml.ns import qn
     for paragraph, line in zip(paragraphs, lines):
+        # A slide-number/footer field keeps its own text; drop it so the new
+        # literal does not get concatenated with the field value.
+        for field in paragraph._p.findall(qn("a:fld")):
+            paragraph._p.remove(field)
         runs = paragraph.runs
         if not runs:
             paragraph.add_run().text = line
@@ -100,26 +106,73 @@ def _text_fills_box(shape):
     return 0.72 <= _text_width_mm(text, size) / usable <= 1.3
 
 
+def _clone_slide(presentation, source):
+    """Duplicate a prototype slide, keeping shapes, text and picture relationships."""
+    import copy as _copy
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+    clone = presentation.slides.add_slide(source.slide_layout)
+    for shape in list(clone.shapes):
+        shape._element.getparent().remove(shape._element)
+    remap = {}
+    for relationship in source.part.rels.values():
+        if relationship.reltype.endswith("/slideLayout"):
+            continue
+        if relationship.is_external:
+            remap[relationship.rId] = clone.part.relate_to(relationship.target_ref, relationship.reltype,
+                                                           is_external=True)
+        else:
+            remap[relationship.rId] = clone.part.relate_to(relationship.target_part, relationship.reltype)
+    for element in source.shapes._spTree:
+        tag = element.tag.rsplit("}", 1)[-1]
+        if tag in ("nvGrpSpPr", "grpSpPr"):
+            continue
+        copied = _copy.deepcopy(element)
+        for node in copied.iter():
+            for attribute in list(node.attrib):
+                value = node.get(attribute)
+                if attribute.startswith("{") and value in remap and attribute.endswith(("embed", "id", "link")):
+                    node.set(attribute, remap[value])
+        clone.shapes._spTree.append(copied)
+    return clone
+
+
 def _apply_texts(slide, texts, prototype):
     if not isinstance(texts, dict):
         raise ValueError("Prototype page 'texts' must be an object of shape id/name to text")
     current = {slot["shape_id"]: slot["text"] for slot in prototype.get("text_slots", [])}
     changed = []
     for key, value in texts.items():
+        overrides = {}
         if isinstance(value, dict):
             if not isinstance(value.get("text"), str):
                 raise ValueError(f"Text for shape {key} must provide a string 'text'")
             new_text = value["text"]
             align = value.get("align")
+            overrides = {name: value[name] for name in ("color", "bold", "italic", "font_pt")
+                         if name in value}
         else:
             if not isinstance(value, str):
                 raise ValueError(f"Text for shape {key} must be a string")
             new_text, align = value, None
         shape = _find_shape(slide, key)
-        if current.get(shape.shape_id) == new_text and align is None:
+        if current.get(shape.shape_id) == new_text and align is None and not overrides:
             continue
-        centering = align == "center" or (align is None and _text_fills_box(shape))
+        text_changed = current.get(shape.shape_id) != new_text
+        centering = align == "center" or (align is None and text_changed and _text_fills_box(shape))
         _set_shape_text(shape, new_text)
+        if overrides:
+            for paragraph in shape.text_frame.paragraphs:
+                for run in paragraph.runs:
+                    if "color" in overrides:
+                        from pptx.dml.color import RGBColor
+                        run.font.color.rgb = RGBColor.from_string(str(overrides["color"]).lstrip("#"))
+                    if "bold" in overrides:
+                        run.font.bold = bool(overrides["bold"])
+                    if "italic" in overrides:
+                        run.font.italic = bool(overrides["italic"])
+                    if "font_pt" in overrides:
+                        from pptx.util import Pt
+                        run.font.size = Pt(float(overrides["font_pt"]))
         if centering or align:
             alignment = {"left": "LEFT", "center": "CENTER", "right": "RIGHT"}.get(align or "center")
             from pptx.enum.text import PP_ALIGN
@@ -351,11 +404,20 @@ def _apply_bullet(paragraph, bullet):
         properties.append(parse_xml(fragment))
 
 
+def _role_color(style, palette):
+    """Replace a colour role with the template's concrete colour."""
+    role = style.pop("color_role", None) if style else None
+    if role and palette.get(role):
+        style["color"] = palette[role]
+    return style
+
+
 def _add_text_item(slide, left_mm, top_mm, box, item, module_index, item_index,
                    role_styles=True, catalog=None):
     from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
     from pptx.util import Mm, Pt
     catalog = catalog or {}
+    palette = catalog.get("_palette", {})
     explicit = {key: item[key] for key in (*BASELINE_KEYS, "align", "anchor",
                                            "line_spacing_pct", "space_after_pt") if key in item}
     citation = item.get("citation") if isinstance(item.get("citation"), dict) else None
@@ -370,6 +432,7 @@ def _add_text_item(slide, left_mm, top_mm, box, item, module_index, item_index,
     else:
         style = effective_style(item, role_styles)
         paragraphs = _text_items(item, style)
+    _role_color(style, palette)
     width_mm, height_mm = box[2], box[3]
     size = style.get("font_pt", 16)
     joined = "\n".join(_paragraph_text(paragraph) for paragraph in paragraphs)
@@ -412,6 +475,7 @@ def _add_text_item(slide, left_mm, top_mm, box, item, module_index, item_index,
                     merged.update(part_style(catalog, "citation", run_annotation))
                 else:
                     merged.update(catalog.get(run_annotation, {}))
+            _role_color(merged, palette)
             for key in BASELINE_KEYS:
                 if key in run_spec:
                     merged[key] = run_spec[key]
@@ -749,6 +813,14 @@ def build(template_dir, spec, output, force=False):
     used, order, manifest_pages = set(), [], []
     default_role_styles = bool(document.get("role_styles", True))
     catalog = merge_styles(document.get("text_styles") or descriptor.get("text_styles"))
+    palette = merge_text_colors(document.get("text_colors") or descriptor.get("text_colors"),
+                                document.get("text_colors") or descriptor.get("text_colors"))
+    for annotation, role in (("heading", "weak"), ("subheading", "weak"), ("body", "normal"),
+                             ("body_large", "normal"), ("bullet", "normal"), ("caption", "normal"),
+                             ("note", "normal"), ("label", "normal"), ("emphasis", "strong")):
+        entry = catalog.setdefault(annotation, {})
+        entry.setdefault("color_role", role)
+    catalog["_palette"] = palette
     for index, page in enumerate(pages, 1):
         if not isinstance(page, dict):
             raise ValueError(f"Page {index} must be an object")
@@ -760,14 +832,14 @@ def build(template_dir, spec, output, force=False):
             if prototype_id not in slides:
                 raise ValueError(f"Page {index}: unknown prototype {prototype_id!r}; available: "
                                  + ", ".join(sorted(slides)))
-            if prototype_id in used:
-                raise ValueError(f"Page {index}: prototype {prototype_id!r} cannot be used twice")
+            reused = prototype_id in used
             used.add(prototype_id)
-            changed = _apply_texts(slides[prototype_id], page.get("texts", {}), prototypes[prototype_id])
-            order.append(slides[prototype_id])
+            slide = _clone_slide(presentation, slides[prototype_id]) if reused else slides[prototype_id]
+            changed = _apply_texts(slide, page.get("texts", {}), prototypes[prototype_id])
+            order.append(slide)
             manifest_pages.append({"page": index, "kind": "prototype", "prototype": prototype_id,
                                    "layout_index": prototypes[prototype_id]["layout_index"],
-                                   "texts_changed": changed})
+                                   "clone": reused, "texts_changed": changed})
         else:
             layout = _layout(presentation, page["layout"], descriptor)
             content_style = descriptor.get("content_style", {})

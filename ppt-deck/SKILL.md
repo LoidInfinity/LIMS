@@ -2,7 +2,7 @@
 name: ppt-deck
 description: 按共享科研风格或某所高校的既有模板制作可编辑 PPTX，用于组会、学术汇报和研究结果展示；支持从一份 PPTX 提取模板入库、保留封面/目录等页面原型并逐像素复现，也支持按学校、标签、比例和版式检索调用。
 metadata:
-  version: "0.8.0"
+  version: "0.9.0"
 ---
 
 # 科研汇报 PPT
@@ -55,7 +55,8 @@ python scripts/compose_deck.py --template-id scut-kaituo-16x9 --spec compose.jso
 ]}
 ```
 
-- 原型页保留原幻灯片的全部形状，只改 `texts` 指定的文字槽（键为 shape id 或唯一形状名，id 见 `template.json` 的 `prototypes[].text_slots`）；不写 `texts` 就是原样复现。每个原型只能用一次。
+- 原型页保留原幻灯片的全部形状，只改 `texts` 指定的文字槽（键为 shape id 或唯一形状名，id 见 `template.json` 的 `prototypes[].text_slots`）；不写 `texts` 就是原样复现。
+- **同一个原型可以复用**：第二次及以后引用会克隆整页（形状、文字、图片关系一并复制），只需改文字。分节目录页就用这个办法——与首页目录同一套版式，只切换当前章节的高亮项，其余格式完全一致；`texts` 的值可写成 `{"text": "...", "color": "#1F8DCF"}` 覆盖颜色。
 - 文字槽若是「按文字长度定宽、左对齐」的文本框（老模板常见，靠框刚好包住文字实现视觉居中），换字后会自动改为居中；需要固定方向时把文字写成 `{"text": "...", "align": "left"}`。
 - 版式页按模板版式新建。入库时采集的内容页标题样式与**标题形状原始 XML** 会一并复用，因此内容页的标题部分可与原稿逐像素一致。
 - 原型页文字槽是固定尺寸，替换文字变长会换行甚至压到相邻元素，交付前必须渲染检查。
@@ -86,7 +87,8 @@ python ../../tools/extract_media.py deck.pptx --slide 3 --output assets/slide03
 - 字体要分别保留 **latin（英文与数字）/ ea（中文）/ cs（复杂文种）** 三套字库；OOXML 里数字跟随 latin，不要用中文字体去渲染数字。项目符号要从段落 `a:pPr` 取 `a:buFont` + `a:buChar`（本库模板的小标题用的是 Wingdings `Ø`，渲染成三角箭头，不是圆点），不能统一写成 `• ` 前缀；`a:buSzPct`、`marL/indent` 一并保留。
 - 文本框的 `insets`（内边距）与 `anchor` 要按原稿保留，否则文字会整体偏移几个像素。
 - **先判断用途，再决定格式**：每个文本框带 `annotation`（display / heading / subheading / body / body_large / bullet / caption / citation / note / label / page_number），每个 run 还可带细分标注（`emphasis`、`superscript`、`subscript`；引用框拆成 journal / year / volume / pages）。模板入库时会从全篇统计**同一用途的众数格式**，写进 `template.json` 的 `text_styles`；合成时按注释查表统一套用，所以两个引用框不会一个 10pt、一个 12pt，也不会字体各异。
-- 字号、字库（latin/ea/cs）、加粗、斜体、对齐参与统一；**颜色不归一**，沿用源稿显式颜色，保留正文深蓝与行内红色强调。
+- 字号、字库（latin/ea/cs）、加粗、斜体、对齐参与统一；**颜色按「强调色」体系归一**：一般文本 `normal`（黑）、小标题 `weak`（弱强调，主题深蓝）、行内/关键词突出 `strong`（强强调，红）、目录当前项 `accent`（主题强调蓝）。模板入库时从全稿统计出 `text_colors`，合成时按用途套用；源稿里不属于这四类的颜色（例如用于对应图中元素的橙色 `#ED7D31`）保持原样，留给后续的「对应色」机制。
+- **对应色（概念，暂未应用）**：解释图片内容时，文字可复用图中该元素的颜色（如图中橙色部分用橙色文字）。`text_colors.corresponding` 已预留字段，当前不做自动匹配。
 - 引用/文献用结构化字段，不要手工拼格式：`{"annotation": "citation", "citation": {"journal": "Nat. Mater.", "year": "2021", "volume": "21", "pages": "503"}}` 会按 catalog 渲染成期刊名斜体、年份加粗、卷号斜体、页码常规并居中。
 - **上标下标是格式不是字体**：用普通字体 + run 属性 `baseline`（上标 `30000`，下标 `-25000`），不要用 Unicode 上标字符或专用「上标字体」。行内斜体、加粗、颜色用 `paragraphs[].runs` 逐段表达，例如 `{"text": "Fe(CN)"}, {"text": "6", "baseline": -25000}, {"text": "3-", "baseline": 30000}`。
 

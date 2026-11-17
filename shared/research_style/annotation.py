@@ -42,6 +42,81 @@ DEFAULT_TEXT_STYLES = {
     "subscript": {"baseline": -25000},
 }
 
+DEFAULT_TEXT_COLORS = {"normal": "#000000", "weak": "#1F3864", "strong": "#C00000",
+                       "accent": "#1F8DCF", "corresponding": None}
+COLOR_ROLES = ("normal", "weak", "strong", "accent")
+
+
+def _rgb(value):
+    value = value.lstrip("#")
+    return tuple(int(value[index:index + 2], 16) for index in (0, 2, 4))
+
+
+def color_role_for(color, palette):
+    """Map an observed colour onto a role; None means 'keep the raw colour'
+    (e.g. an orange correspondence colour that has no role yet)."""
+    if not color or not str(color).startswith("#"):
+        return None
+    best, best_distance = None, None
+    for role in COLOR_ROLES:
+        reference = (palette or {}).get(role)
+        if not reference:
+            continue
+        distance = sum(abs(a - b) for a, b in zip(_rgb(color), _rgb(reference)))
+        if best_distance is None or distance < best_distance:
+            best, best_distance = role, distance
+    if best is not None and best_distance is not None and best_distance <= 120:
+        return best
+    return None
+
+
+def merge_text_colors(override=None, base=None):
+    merged = dict(base or DEFAULT_TEXT_COLORS)
+    merged.update(override or {})
+    return merged
+
+
+def derive_text_colors(presentation, skip_indices=(), palette=None):
+    """Learn normal/weak/strong/accent colours from how the deck uses colour."""
+    palette = merge_text_colors(palette)
+    weak, strong, accent = Counter(), Counter(), Counter()
+    for index, slide in enumerate(presentation.slides, 1):
+        if index in skip_indices:
+            continue
+        title = slide.shapes.title.text.strip() if slide.shapes.title is not None else ""
+        for shape in slide.shapes:
+            if not shape.has_text_frame or shape.is_placeholder:
+                continue
+            text = shape.text_frame.text.strip()
+            if not text:
+                continue
+            first_run = next((run for p in shape.text_frame.paragraphs
+                              for run in p.runs if run.text.strip()), None)
+            if first_run is None:
+                continue
+            color = _run_color(first_run, palette)
+            if not color:
+                continue
+            red, green, blue = _rgb(color)
+            if red > 150 and red > green + 60 and red > blue + 60:
+                strong[color] += 1
+                continue
+            if title == "目录" and blue > red + 40:
+                accent[color] += 1
+                continue
+            size = first_run.font.size.pt if first_run.font.size else 18
+            if first_run.font.bold and size >= 13:
+                weak[color] += 1
+    result = dict(DEFAULT_TEXT_COLORS)
+    if weak:
+        result["weak"] = _mode(weak)
+    if strong:
+        result["strong"] = _mode(strong)
+    if accent:
+        result["accent"] = _mode(accent)
+    return result
+
+
 CITATION_RE = re.compile(
     r"^(?P<journal>[A-Z][A-Za-z&.'\- ]{1,60}?)\s*(?P<year>(?:19|20)\d{2})\s*,\s*"
     r"(?P<volume>[0-9A-Za-z]{1,12}?)\s*,\s*(?P<pages>\d{1,6}(?:\s*[\u2013\-]\s*\d{1,6})?)\.?$")
@@ -129,6 +204,9 @@ def style_for(catalog, annotation, explicit=None):
     for key, value in (explicit or {}).items():
         if key not in ("annotation", "citation", "parts"):
             style[key] = value
+    # An explicit source colour beats the purpose's colour role.
+    if (explicit or {}).get("color"):
+        style.pop("color_role", None)
     return style
 
 

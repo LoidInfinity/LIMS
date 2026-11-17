@@ -610,12 +610,14 @@ def ingest(source, root, school, school_slug=None, template_id=None, name=None, 
                                     source_mb=round(len(data) / 1048576, 2))
     package = _zip_bytes(slim(parts, [index for index, _ in keep]))
     validate_slim(package, len(descriptor["layouts"]), len(keep))
-    from .annotation import derive_text_styles
+    from .annotation import derive_text_colors, derive_text_styles
     from pptx import Presentation
     theme_part = next((name for name in parts if re.fullmatch(r"ppt/theme/theme\d+\.xml", name)), None)
     theme_colors = _theme(parts, theme_part)[0] if theme_part else {}
-    descriptor["text_styles"] = derive_text_styles(Presentation(str(source)), theme_colors,
+    deck = Presentation(str(source))
+    descriptor["text_styles"] = derive_text_styles(deck, theme_colors,
                                                    skip_indices={index for index, _ in keep})
+    descriptor["text_colors"] = derive_text_colors(deck, skip_indices={index for index, _ in keep})
     validate_template(descriptor)
     target = Path(root) / slug / descriptor["id"]
     if target.exists() and not force:
