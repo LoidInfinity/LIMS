@@ -415,6 +415,51 @@ def _role_color(style, palette):
     return style
 
 
+BADGE_PAD_X_MM = 3.5
+BADGE_PAD_Y_MM = 1.6
+
+
+def _badge_rect(box, item, style):
+    """Badges own a background: the plate grows to fit the canonical font."""
+    from pptx.util import Mm
+    text = "\n".join(_paragraph_text(paragraph) for paragraph in _text_items(item, style)).strip()
+    size = float(style.get("font_pt") or 20.0)
+    text_w = _text_em(text) * size * 25.4 / 72
+    line_h = size * 1.35 * 25.4 / 72
+    width = max(box[2] * 1.0, text_w + 2 * BADGE_PAD_X_MM)
+    height = max(box[3] * 1.0, line_h + 2 * BADGE_PAD_Y_MM)
+    center_x = box[0] + box[2] / 2
+    center_y = box[1] + box[3] / 2
+    return [center_x - width / 2, center_y - height / 2, width, height]
+
+
+def _add_badge_background(slide, rect, badge):
+    from pptx.dml.color import RGBColor
+    from pptx.enum.shapes import MSO_SHAPE
+    from pptx.oxml.ns import qn
+    from pptx.util import Mm
+    radius = float(badge.get("radius_mm") or 0)
+    if radius > 0:
+        shape = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Mm(rect[0]), Mm(rect[1]),
+                                       Mm(rect[2]), Mm(rect[3]))
+        shape.adjustments[0] = max(0.0, min(0.5, radius / min(rect[2], rect[3])))
+    else:
+        shape = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Mm(rect[0]), Mm(rect[1]),
+                                       Mm(rect[2]), Mm(rect[3]))
+    fill = badge.get("fill") or {"color": "#1F8DCF", "alpha_pct": 50}
+    specification = fill if isinstance(fill, dict) else {"color": fill}
+    shape.fill.solid()
+    shape.fill.fore_color.rgb = RGBColor.from_string(str(specification["color"]).lstrip("#"))
+    if specification.get("alpha_pct") is not None:
+        solid = shape._element.spPr.find(qn("a:solidFill"))
+        srgb = solid.find(qn("a:srgbClr")) if solid is not None else None
+        if srgb is not None:
+            srgb.append(srgb.makeelement(qn("a:alpha"),
+                                         {"val": str(int(round(float(specification["alpha_pct"]) * 1000)))}))
+    shape.line.fill.background()
+    return shape
+
+
 def _add_text_item(slide, left_mm, top_mm, box, item, module_index, item_index,
                    role_styles=True, catalog=None):
     from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
@@ -436,6 +481,13 @@ def _add_text_item(slide, left_mm, top_mm, box, item, module_index, item_index,
         style = effective_style(item, role_styles)
         paragraphs = _text_items(item, style)
     _role_color(style, palette)
+    badge = item.get("badge") if isinstance(item.get("badge"), dict) else None
+    if badge:
+        rect = _badge_rect([left_mm, top_mm, box[2], box[3]], item, style)
+        box = [rect[0], rect[1], rect[2], rect[3]]
+        left_mm, top_mm = rect[0], rect[1]
+        style.setdefault("align", "center")
+        style.setdefault("anchor", "middle")
     width_mm, height_mm = box[2], box[3]
     size = style.get("font_pt", 16)
     wrap = item.get("word_wrap", True) is not False
@@ -445,9 +497,11 @@ def _add_text_item(slide, left_mm, top_mm, box, item, module_index, item_index,
         wrap = False
     joined = "\n".join(_paragraph_text(paragraph) for paragraph in paragraphs)
     needed = _text_height_mm(joined, width_mm - 1.0, size, wrap=wrap)
-    if needed > height_mm + 0.5 and not item.get("allow_overflow"):
+    if needed > height_mm + 0.5 and not (item.get("allow_overflow") or badge):
         raise ValueError(f"Module {module_index} item {item_index}: text needs {needed:.1f} mm but its box is "
                          f"{height_mm:.1f} mm high; enlarge the box, shorten the text or lower font_pt")
+    if badge:
+        _add_badge_background(slide, [left_mm, top_mm, width_mm, height_mm], badge)
     shape = slide.shapes.add_textbox(Mm(left_mm), Mm(top_mm), Mm(width_mm), Mm(height_mm))
     frame = shape.text_frame
     frame.word_wrap = wrap

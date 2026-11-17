@@ -31,6 +31,8 @@ DEFAULT_TEXT_STYLES = {
                  "font_latin": "Calibri", "font_cjk": "宋体", "font_cs": "Calibri",
                  "parts": {"journal": {"italic": True}, "year": {"bold": True},
                            "volume": {"italic": True}, "pages": {}, "separator": {}}},
+    "badge": {"font_pt": 20, "bold": True, "color": "#FFFFFF", "align": "center", "anchor": "middle",
+              "font_latin": "黑体", "font_cjk": "黑体", "font_cs": "Calibri"},
     "data_label": {"font_pt": 18, "bold": True, "align": "center",
                    "font_latin": "Calibri", "font_cjk": "Calibri", "font_cs": "Calibri"},
     "note": {"font_pt": 10, "color": "#595959",

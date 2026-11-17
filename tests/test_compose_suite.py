@@ -450,6 +450,30 @@ class ComposeTests(unittest.TestCase):
         self.assertTrue(runs[0].font.italic)   # journal
         self.assertTrue(runs[2].font.bold)    # year
 
+    def test_badge_plate_expands_and_centres_text(self):
+        from pptx import Presentation
+        from pptx.enum.text import PP_ALIGN
+        descriptor, target = self.template()
+        layout = self.layout_index(descriptor, "Title and Content")
+        spec = {"template": descriptor["id"], "pages": [{
+            "layout": layout, "title": "横幅",
+            "modules": [{"rect": [10, 45, 300, 60], "padding_mm": 2.0, "items": [
+                {"box": [0.3, 0.1, 0.3, 0.1], "annotation": "badge",
+                 "badge": {"fill": {"color": "#4472C4", "alpha_pct": 50}},
+                 "paragraphs": [{"runs": [{"text": "热扩散效应（Soret效应）"}]}],
+                 "font_pt": 20, "word_wrap": False}]}]}]}
+        output = self.root / "badge.pptx"
+        compose(target, spec, output)
+        slide = Presentation(str(output)).slides[0]
+        label = next(shape for shape in slide.shapes
+                     if shape.has_text_frame and "热扩散效应" in shape.text_frame.text)
+        plates = [shape for shape in slide.shapes
+                  if shape.has_text_frame is False or not shape.text_frame.text.strip()]
+        self.assertTrue(plates, "badge draws its own plate")
+        self.assertEqual(label.text_frame.paragraphs[0].alignment, PP_ALIGN.CENTER)
+        self.assertGreater(label.width / 36000, 40, "plate grows to fit the canonical font")
+        self.assertEqual(label.text_frame.paragraphs[0].runs[0].font.size.pt, 20)
+
     def test_fitted_textbox_centers_rewritten_text(self):
         from pptx import Presentation
         from pptx.enum.text import PP_ALIGN

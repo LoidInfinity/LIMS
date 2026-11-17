@@ -610,6 +610,9 @@ def _resolve_collisions(entries, inner, images, has_citations=False):
             needed = text_height_mm(plain, rect[2] - 1.0, size)
             if needed > rect[3]:
                 rect[3] = needed
+        if payload.get("annotation") == "badge":
+            placed.append(rect)
+            continue
         if payload.get("overlay"):
             if band is not None and payload.get("annotation") != "citation":
                 depth = min(rect[1] + rect[3], band[1] + band[3]) - max(rect[1], band[1])
@@ -643,18 +646,7 @@ def _resolve_collisions(entries, inner, images, has_citations=False):
                 rect = candidate
                 break
         else:
-            size = float(payload.get("font_pt") or 14)
-            for step in range(1, 5):
-                smaller = max(9.0, size - step)
-                plain = payload_plain_text(payload)
-                needed = text_height_mm(plain, rect[2] - 1.0, smaller)
-                candidate = [rect[0], rect[1], rect[2], min(rect[3], needed)]
-                if not any(_boxes_overlap(candidate, other) for other in obstacles):
-                    rect, size = candidate, smaller
-                    payload["font_pt"] = smaller
-                    break
-            else:
-                payload["overlay"] = True
+            payload["overlay"] = True
         # Overflow height may exceed the module, but the stored box must stay
         # inside the inner area; the allow_overflow flag lets the renderer keep
         # the canonical font size and let glyphs spill instead.
@@ -675,8 +667,17 @@ def _resolve_collisions(entries, inner, images, has_citations=False):
             b = entries[second]["payload"]
             if a.get("overlay") or b.get("overlay"):
                 continue
-            if _boxes_overlap(_box_mm(a["box"], inner), _box_mm(b["box"], inner), tolerance=0.0):
-                b["overlay"] = True
+            if not _boxes_overlap(_box_mm(a["box"], inner), _box_mm(b["box"], inner), tolerance=0.0):
+                continue
+            if band is not None and b.get("annotation") != "citation":
+                rect_b = _box_mm(b["box"], inner)
+                depth = min(rect_b[1] + rect_b[3], band[1] + band[3]) - max(rect_b[1], band[1])
+                if depth > 0.2 and rect_b[1] < band[1] + 2.0 and rect_b[1] - depth - 0.6 >= inner[1]:
+                    rect_b[1] -= depth + 0.6
+                    b["box"] = [(rect_b[0] - inner[0]) / inner[2], (rect_b[1] - inner[1]) / inner[3],
+                                rect_b[2] / inner[2], rect_b[3] / inner[3]]
+                    continue
+            b["overlay"] = True
     return entries
 
 
@@ -734,6 +735,40 @@ def fit_text(payload, rect, inner):
     return rect
 
 
+
+def _badge_item(shape, colors, fonts, catalog, palette):
+    """A banner group: filled plate plus its text; text is centred in the plate."""
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+    if shape.shape_type != MSO_SHAPE_TYPE.GROUP:
+        return None
+    rect = shape_rect(shape)
+    if rect is None or rect[3] > 24 or rect[2] < rect[3]:
+        return None
+    plate, label = None, None
+    for child in shape.shapes:
+        if child.has_text_frame and child.text_frame.text.strip():
+            label = child
+            continue
+        info = container_of(child, colors)
+        if info is not None and info.get("fill") and plate is None:
+            plate = info
+    if plate is None or label is None:
+        return None
+    style = (catalog or {}).get("badge", {})
+    size = float(style.get("font_pt") or 20)
+    payload = {
+        "rect": rect,
+        "annotation": "badge",
+        "paragraphs": [{"runs": [{"text": label.text_frame.text}]}],
+        "font_pt": size,
+        "badge": {"fill": plate.get("fill"), "radius_mm": plate.get("radius_mm", 0)},
+        "align": "center", "anchor": "middle",
+        "word_wrap": False, "allow_overflow": True,
+        "insets_mm": [0.5, 0.5, 0.5, 0.5],
+    }
+    return payload
+
+
 def analyse_slide(slide, number, colors, assets, asset_prefix, size_mm, padding=1.0, fonts=None,
                   catalog=None, palette=None):
     from lxml import etree
@@ -741,7 +776,14 @@ def analyse_slide(slide, number, colors, assets, asset_prefix, size_mm, padding=
     width_mm, height_mm = size_mm
     title, title_xml, frames, items = "", None, [], []
     layout_part = str(slide.slide_layout.part.partname).lstrip("/")
-    for shape, transform in flatten(slide.shapes):
+    top_shapes = []
+    for shape in slide.shapes:
+        badge = _badge_item(shape, colors, fonts, catalog, palette)
+        if badge is not None:
+            items.append(badge)
+            continue
+        top_shapes.append(shape)
+    for shape, transform in flatten(top_shapes):
         rect = shape_rect(shape)
         if rect is None:
             continue
@@ -828,7 +870,7 @@ def analyse_slide(slide, number, colors, assets, asset_prefix, size_mm, padding=
             if "image" in item:
                 payload["image"] = item["image"]
             else:
-                for key in ("text", "paragraphs", "role", "annotation", "citation", "font_pt",
+                for key in ("text", "paragraphs", "role", "annotation", "citation", "badge", "font_pt",
                             "allow_overflow",
                             "bold", "italic", "color", "color_role", "align", "anchor", "font_latin",
                             "font_cjk", "font_cs", "bullet", "line_spacing_pct", "space_after_pt",
