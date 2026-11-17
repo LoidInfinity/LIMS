@@ -13,9 +13,15 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import sys
 import unicodedata
 import zipfile
 from xml.etree import ElementTree as ET
+
+SHARED = Path(__file__).resolve().parents[1] / "shared"
+if str(SHARED) not in sys.path:
+    sys.path.insert(0, str(SHARED))
+from research_style.annotation import classify, load_catalog, parse_citation, run_annotation
 import colorsys
 
 P = "http://schemas.openxmlformats.org/presentationml/2006/main"
@@ -368,11 +374,77 @@ def infer_role(paragraphs, size, bold):
     return "body"
 
 
-def text_payload(shape, colors, fonts, default_pt=18):
+def text_payload(shape, colors, fonts, default_pt=18, catalog=None):
     from pptx.oxml.ns import qn
-    paragraphs = list(shape.text_frame.paragraphs)
+    frame = shape.text_frame
+    paragraphs = list(frame.paragraphs)
     if not any(paragraph.text.strip() for paragraph in paragraphs):
         return None
+    insets = [round(frame.margin_left / EMU_MM, 3), round(frame.margin_top / EMU_MM, 3),
+              round(frame.margin_right / EMU_MM, 3), round(frame.margin_bottom / EMU_MM, 3)]
+    alignment = next((p.alignment for p in paragraphs if p.alignment is not None), None)
+    align = ROLE_ALIGN.get(alignment.name) if alignment is not None else None
+    anchor_name = frame.vertical_anchor
+    anchor = {"TOP": "top", "MIDDLE": "middle", "BOTTOM": "bottom"}.get(anchor_name.name) if anchor_name else None
+    if catalog:
+        citation = parse_citation(frame.text)
+        if citation:
+            payload = {"annotation": "citation", "citation": citation, "insets_mm": insets,
+                       "font_pt": float(catalog.get("citation", {}).get("font_pt", 12))}
+            if align:
+                payload["align"] = align
+            if anchor:
+                payload["anchor"] = anchor
+            return payload
+        first_run = next((run for paragraph in paragraphs
+                          for run in paragraph.runs if run.text.strip()), None)
+        size = first_run.font.size.pt if first_run is not None and first_run.font.size else default_pt
+        bold = bool(first_run.font.bold) if first_run is not None else False
+        bulleted = any(paragraph._p.find(qn("a:pPr")) is not None
+                       and paragraph._p.find(qn("a:pPr")).find(qn("a:buChar")) is not None
+                       for paragraph in paragraphs)
+        annotation = classify(frame.text, size, bold, bulleted,
+                               bool(first_run.font.italic) if first_run is not None else False)
+        style = catalog.get(annotation, {})
+        base_bold = bool(style.get("bold"))
+        paragraph_colors = [run_color(run, colors) for paragraph in paragraphs
+                            for run in paragraph.runs if run.text.strip()]
+        item_color = next((value for value in paragraph_colors if value), None)
+        spec_paragraphs = []
+        for paragraph in paragraphs:
+            runs = []
+            for run in paragraph.runs:
+                record = {"text": run.text}
+                properties = run._r.find(qn("a:rPr"))
+                baseline = properties.get("baseline") if properties is not None else None
+                color = run_color(run, colors)
+                if color and color != item_color:
+                    record["color"] = color
+                run_name = run_annotation(color, item_color, baseline,
+                                          bool(run.font.bold), base_bold)
+                if run_name:
+                    record["annotation"] = run_name
+                runs.append(record)
+            spec = {"runs": runs}
+            bullet = bullet_of(paragraph, colors)
+            if bullet:
+                spec["bullet"] = bullet
+            spec.update(paragraph_spacing(paragraph))
+            spec_paragraphs.append(spec)
+        payload = {"annotation": annotation, "paragraphs": spec_paragraphs,
+                   "font_pt": float(style.get("font_pt", size)), "insets_mm": insets}
+        if item_color:
+            payload["color"] = item_color
+        if align:
+            payload["align"] = align
+        if anchor:
+            payload["anchor"] = anchor
+        for key in ("bullet", "line_spacing_pct", "space_after_pt"):
+            if key in spec_paragraphs[0] and len({str(p.get(key)) for p in spec_paragraphs}) == 1:
+                payload[key] = spec_paragraphs[0][key]
+                for paragraph in spec_paragraphs:
+                    paragraph.pop(key, None)
+        return payload
     raw = []
     for paragraph in paragraphs:
         entry = {"runs": [run_payload(run, colors, fonts) for run in paragraph.runs]}
@@ -407,14 +479,12 @@ def text_payload(shape, colors, fonts, default_pt=18):
             payload[key] = raw[0][key]
             for paragraph in raw:
                 paragraph.pop(key, None)
-    frame = shape.text_frame
-    payload["insets_mm"] = [round(frame.margin_left / EMU_MM, 3), round(frame.margin_top / EMU_MM, 3),
-                            round(frame.margin_right / EMU_MM, 3), round(frame.margin_bottom / EMU_MM, 3)]
-    anchor = frame.vertical_anchor
-    if anchor is not None:
-        payload["anchor"] = {"TOP": "top", "MIDDLE": "middle", "BOTTOM": "bottom"}.get(anchor.name, "top")
+    if align:
+        payload["align"] = align
+    if anchor:
+        payload["anchor"] = anchor
+    payload["insets_mm"] = insets
     return payload
-
 
 def text_em(text):
     return sum(1.0 if unicodedata.east_asian_width(char) in "WF" else 0.5 for char in text)
@@ -473,7 +543,8 @@ def fit_text(payload, rect, inner):
     return rect
 
 
-def analyse_slide(slide, number, colors, assets, asset_prefix, size_mm, padding=1.0, fonts=None):
+def analyse_slide(slide, number, colors, assets, asset_prefix, size_mm, padding=1.0, fonts=None,
+                  catalog=None):
     from lxml import etree
     from pptx.enum.shapes import MSO_SHAPE_TYPE
     width_mm, height_mm = size_mm
@@ -507,7 +578,7 @@ def analyse_slide(slide, number, colors, assets, asset_prefix, size_mm, padding=
             items.append({"rect": rect, "image": f"{asset_prefix}/{target.name}"})
             continue
         if shape.has_text_frame:
-            payload = text_payload(shape, colors, fonts or {})
+            payload = text_payload(shape, colors, fonts or {}, catalog=catalog)
             if payload is not None:
                 items.append({"rect": rect, **payload})
     modules = [{"rect": frame["rect"], "padding_mm": padding, "border": frame["border"],
@@ -548,9 +619,9 @@ def analyse_slide(slide, number, colors, assets, asset_prefix, size_mm, padding=
             if "image" in item:
                 payload["image"] = item["image"]
             else:
-                for key in ("text", "paragraphs", "role", "font_pt", "bold", "italic", "color",
-                            "align", "anchor", "font_latin", "font_cjk", "font_cs", "bullet",
-                            "line_spacing_pct", "space_after_pt", "insets_mm"):
+                for key in ("text", "paragraphs", "role", "annotation", "citation", "font_pt",
+                            "bold", "italic", "color", "align", "anchor", "font_latin", "font_cjk",
+                            "font_cs", "bullet", "line_spacing_pct", "space_after_pt", "insets_mm"):
                     if key in item:
                         payload[key] = item[key]
                 payload.setdefault("font_pt", 18)
@@ -567,7 +638,8 @@ def analyse_slide(slide, number, colors, assets, asset_prefix, size_mm, padding=
             "layout_part": layout_part, "modules": result}
 
 
-def build_spec(deck_path, slides, assets, asset_prefix, layout, template=None, report=None):
+def build_spec(deck_path, slides, assets, asset_prefix, layout, template=None, report=None,
+               catalog=None):
     from pptx import Presentation
     presentation = Presentation(str(deck_path))
     size_mm = (presentation.slide_width / EMU_MM, presentation.slide_height / EMU_MM)
@@ -578,7 +650,7 @@ def build_spec(deck_path, slides, assets, asset_prefix, layout, template=None, r
         if not 1 <= number <= len(presentation.slides):
             raise ValueError(f"Slide {number} is out of range")
         analysis = analyse_slide(presentation.slides[number - 1], number, colors, assets, asset_prefix,
-                                 size_mm, fonts=fonts)
+                                 size_mm, fonts=fonts, catalog=catalog)
         page = {"layout": layout, "layout_part": analysis["layout_part"], "modules": analysis["modules"]}
         if analysis["title"].strip():
             page["title"] = analysis["title"]
@@ -605,6 +677,8 @@ def main():
     parser.add_argument("--layout", type=int, required=True, help="Template layout index for these pages")
     parser.add_argument("--template", help="Template id to record in the spec")
     parser.add_argument("--report", type=Path, help="Optional raw analysis JSON")
+    parser.add_argument("--catalog", type=Path,
+                        help="template.json whose text_styles normalise per-purpose formatting")
     args = parser.parse_args()
     assets = args.assets.expanduser().resolve()
     spec_parent = args.spec.expanduser().resolve().parent
@@ -612,8 +686,11 @@ def main():
         prefix = assets.relative_to(spec_parent).as_posix()
     except ValueError:
         prefix = str(assets)
+    catalog = load_catalog(args.catalog) if args.catalog else None
     spec = build_spec(args.presentation.expanduser().resolve(), sorted(set(args.slide)),
-                      assets, prefix, args.layout, args.template, args.report)
+                      assets, prefix, args.layout, args.template, args.report, catalog)
+    if catalog:
+        spec["text_styles"] = catalog
     args.spec.write_text(json.dumps(spec, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"{args.spec}  ({len(spec['pages'])} page(s))")
     for page in spec["pages"]:

@@ -2,7 +2,7 @@
 name: ppt-deck
 description: 按共享科研风格或某所高校的既有模板制作可编辑 PPTX，用于组会、学术汇报和研究结果展示；支持从一份 PPTX 提取模板入库、保留封面/目录等页面原型并逐像素复现，也支持按学校、标签、比例和版式检索调用。
 metadata:
-  version: "0.7.0"
+  version: "0.8.0"
 ---
 
 # 科研汇报 PPT
@@ -85,8 +85,9 @@ python ../../tools/extract_media.py deck.pptx --slide 3 --output assets/slide03
 - 版式用 `query_template.py show` 的清单确定索引；同名版式存在于多套母版时必须用索引。批量复现时按页记录真实版式（`tools/analyze_page.py` 会输出每页的 `layout_part` 与标题 XML），不要把探针页的版式和标题位置套到所有页。
 - 字体要分别保留 **latin（英文与数字）/ ea（中文）/ cs（复杂文种）** 三套字库；OOXML 里数字跟随 latin，不要用中文字体去渲染数字。项目符号要从段落 `a:pPr` 取 `a:buFont` + `a:buChar`（本库模板的小标题用的是 Wingdings `Ø`，渲染成三角箭头，不是圆点），不能统一写成 `• ` 前缀；`a:buSzPct`、`marL/indent` 一并保留。
 - 文本框的 `insets`（内边距）与 `anchor` 要按原稿保留，否则文字会整体偏移几个像素。
-- **先判断用途，再决定格式**：文字项可带 `role`（title / heading / subheading / body / caption / citation / note / page_number），`compose` 先套角色默认格式，再被显式属性覆盖。从源稿复现时把 `role_styles` 设为 `false`，角色只作标注，避免给原稿没有显式设置的属性强加样式。
-- **引用/文献**用结构化字段，不要手工拼格式：`{"role": "citation", "citation": {"journal": "Nat. Mater.", "year": "2021", "volume": "21", "pages": "503"}}` 会渲染成期刊名斜体、年份加粗、卷号斜体、页码常规并居中。
+- **先判断用途，再决定格式**：每个文本框带 `annotation`（display / heading / subheading / body / body_large / bullet / caption / citation / note / label / page_number），每个 run 还可带细分标注（`emphasis`、`superscript`、`subscript`；引用框拆成 journal / year / volume / pages）。模板入库时会从全篇统计**同一用途的众数格式**，写进 `template.json` 的 `text_styles`；合成时按注释查表统一套用，所以两个引用框不会一个 10pt、一个 12pt，也不会字体各异。
+- 字号、字库（latin/ea/cs）、加粗、斜体、对齐参与统一；**颜色不归一**，沿用源稿显式颜色，保留正文深蓝与行内红色强调。
+- 引用/文献用结构化字段，不要手工拼格式：`{"annotation": "citation", "citation": {"journal": "Nat. Mater.", "year": "2021", "volume": "21", "pages": "503"}}` 会按 catalog 渲染成期刊名斜体、年份加粗、卷号斜体、页码常规并居中。
 - **上标下标是格式不是字体**：用普通字体 + run 属性 `baseline`（上标 `30000`，下标 `-25000`），不要用 Unicode 上标字符或专用「上标字体」。行内斜体、加粗、颜色用 `paragraphs[].runs` 逐段表达，例如 `{"text": "Fe(CN)"}, {"text": "6", "baseline": -25000}, {"text": "3-", "baseline": 30000}`。
 
 ## 双板块与留白率

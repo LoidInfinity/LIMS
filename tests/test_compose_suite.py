@@ -364,7 +364,7 @@ class ComposeTests(unittest.TestCase):
         self.assertTrue(segments[0].font.italic)      # journal italic
         self.assertTrue(segments[2].font.bold)        # year bold
         self.assertTrue(segments[4].font.italic)      # volume italic
-        self.assertEqual(segments[0].font.size.pt, 10.5)
+        self.assertEqual(segments[0].font.size.pt, 12.0)
         self.assertEqual(citation.text_frame.paragraphs[0].alignment, PP_ALIGN.CENTER)
 
         disabled = dict(page)
@@ -373,8 +373,8 @@ class ComposeTests(unittest.TestCase):
         plain = Presentation(str(self.root / "norole.pptx")).slides[0]
         plain_citation = next(shape for shape in plain.shapes
                               if shape.has_text_frame and "Nat. Mater." in shape.text_frame.text)
-        # Without role defaults no size is forced, so the run inherits the theme.
-        self.assertIsNone(plain_citation.text_frame.paragraphs[0].runs[0].font.size)
+        # Catalog styles still apply; role defaults are what role_styles turns off.
+        self.assertEqual(plain_citation.text_frame.paragraphs[0].runs[0].font.size.pt, 12.0)
 
     def test_fitted_textbox_centers_rewritten_text(self):
         from pptx import Presentation

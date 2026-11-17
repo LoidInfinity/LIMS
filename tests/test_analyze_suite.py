@@ -156,6 +156,25 @@ class AnalyzeTests(unittest.TestCase):
         heading = next(item for item in items if "要点一" in analyze_page.payload_plain_text(item))
         self.assertIn(heading["role"], ("heading", "subheading"))
 
+    def test_catalog_mode_emits_annotations(self):
+        from PIL import Image
+        from research_style.annotation import merge_styles
+        image = self.root / "figure.png"
+        Image.new("RGB", (10, 10), (0, 0, 0)).save(image)
+        deck = make_deck(self.root / "deck.pptx", image)
+        spec = analyze_page.build_spec(deck, [1], self.root / "assets", "assets", 5,
+                                       catalog=merge_styles(None))
+        items = self.all_items(spec)
+        citation = next(item for item in items if item.get("annotation") == "citation")
+        self.assertEqual(citation["citation"],
+                         {"journal": "Nat. Mater.", "year": "2021", "volume": "21", "pages": "503"})
+        self.assertEqual(citation["font_pt"], 12.0)
+        self.assertNotIn("paragraphs", citation)
+        annotated = [item for item in items if item.get("annotation") and "paragraphs" in item]
+        self.assertTrue(annotated, "ordinary text must carry a purpose annotation")
+        self.assertIn(annotated[0]["annotation"],
+                      ("heading", "subheading", "body", "body_large", "caption", "note", "label"))
+
     def test_analysis_ignores_text_free_decorations(self):
         from PIL import Image
         image = self.root / "figure.png"

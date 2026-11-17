@@ -102,13 +102,15 @@ python tools/analyze_page.py "开题.pptx" --slide 4 --slide 5 --assets assets/a
 
 行内格式用 `paragraphs[].runs` 表达（逐段文字/斜体/加粗/颜色/字号），上标下标用 run 的 `baseline` 属性（`30000` / `-25000`）配普通字体，而不是 Unicode 上标字符。文本框 `insets_mm` 与 `anchor` 也按原稿保留。
 
-文字项可带 `role`（heading/subheading/body/caption/citation/note 等）先判定用途再套格式；引用用结构化字段：
+文字项可带 `annotation` 说明用途（display / heading / subheading / body / body_large / bullet / caption / citation / note / label / page_number），入库时会统计全篇**同一用途的众数格式**（字号、latin/ea/cs 字库、加粗、斜体、对齐），写进 `template.json` 的 `text_styles`；合成时查表统一套用，避免同类文本字号字体各异。颜色不参与归一，保留源稿显式颜色。
+
+引用用结构化字段：
 
 ```json
-{"role": "citation", "citation": {"journal": "Nat. Mater.", "year": "2021", "volume": "21", "pages": "503"}}
+{"annotation": "citation", "citation": {"journal": "Nat. Mater.", "year": "2021", "volume": "21", "pages": "503"}}
 ```
 
-渲染为期刊名斜体、年份加粗、卷号斜体、页码常规并居中。从源稿复现时在 spec 顶层设 `"role_styles": false`，避免角色默认格式覆盖原稿未显式设置的属性。
+渲染为期刊名斜体、年份加粗、卷号斜体、页码常规并居中（各部分的斜体/加粗规则也来自 `text_styles.citation.parts`）。run 可带 `emphasis` / `superscript` / `subscript` 标注，上下标用 `baseline` 属性实现。spec 顶层也可给 `text_styles` 覆盖模板值。
 
 ## 双板块与留白率
 

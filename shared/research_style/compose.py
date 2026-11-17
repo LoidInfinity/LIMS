@@ -14,6 +14,7 @@ import math
 from pathlib import Path
 import unicodedata
 
+from .annotation import citation_segments, merge_styles, part_style, style_for
 from .core import atomic_bytes, preflight_outputs, read_json, write_json
 from .template import DESCRIPTOR_NAME, descriptor_sha256, load_descriptor, template_root
 
@@ -350,11 +351,25 @@ def _apply_bullet(paragraph, bullet):
         properties.append(parse_xml(fragment))
 
 
-def _add_text_item(slide, left_mm, top_mm, box, item, module_index, item_index, role_styles=True):
+def _add_text_item(slide, left_mm, top_mm, box, item, module_index, item_index,
+                   role_styles=True, catalog=None):
     from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
     from pptx.util import Mm, Pt
-    style = effective_style(item, role_styles)
-    paragraphs = _text_items(item, style)
+    catalog = catalog or {}
+    explicit = {key: item[key] for key in (*BASELINE_KEYS, "align", "anchor",
+                                           "line_spacing_pct", "space_after_pt") if key in item}
+    citation = item.get("citation") if isinstance(item.get("citation"), dict) else None
+    annotation = item.get("annotation")
+    if citation:
+        style = style_for(catalog, "citation", explicit)
+        paragraphs = [{"runs": [{"text": segment_text, "annotation": part}
+                                for part, segment_text in citation_segments(citation)]}]
+    elif annotation and annotation in catalog:
+        style = style_for(catalog, annotation, explicit)
+        paragraphs = _text_items(item, style)
+    else:
+        style = effective_style(item, role_styles)
+        paragraphs = _text_items(item, style)
     width_mm, height_mm = box[2], box[3]
     size = style.get("font_pt", 16)
     joined = "\n".join(_paragraph_text(paragraph) for paragraph in paragraphs)
@@ -391,6 +406,12 @@ def _add_text_item(slide, left_mm, top_mm, box, item, module_index, item_index, 
             run = paragraph.add_run()
             run.text = str(run_spec.get("text", ""))
             merged = dict(style)
+            run_annotation = run_spec.get("annotation")
+            if run_annotation:
+                if citation:
+                    merged.update(part_style(catalog, "citation", run_annotation))
+                else:
+                    merged.update(catalog.get(run_annotation, {}))
             for key in BASELINE_KEYS:
                 if key in run_spec:
                     merged[key] = run_spec[key]
@@ -399,7 +420,6 @@ def _add_text_item(slide, left_mm, top_mm, box, item, module_index, item_index, 
             if merged.get("baseline") is not None:
                 _apply_baseline(run, merged["baseline"])
     return shape
-
 
 def _add_image_item(slide, left_mm, top_mm, box, item, module_index, item_index, base_dir):
     from PIL import Image
@@ -447,7 +467,7 @@ def _content_fraction(items):
     return max(0.0, (right - left) * (bottom - top))
 
 
-def _add_panels(slide, panels, base_dir, index, role_styles=True):
+def _add_panels(slide, panels, base_dir, index, role_styles=True, catalog=None):
     area = panels.get("area") or [8.2, 26.0, 322.3, 156.0]
     if not isinstance(area, list) or len(area) != 4:
         raise ValueError(f"Page {index}: panels.area must be [x_mm, y_mm, w_mm, h_mm]")
@@ -484,14 +504,14 @@ def _add_panels(slide, panels, base_dir, index, role_styles=True):
         raise ValueError(f"Page {index}: panel whitespace differs too much "
                          f"({whitespaces[0]:.3f} vs {whitespaces[1]:.3f}, tolerance {tolerance}); "
                          "balance the content or adjust panels.ratio")
-    summary = _add_modules(slide, modules, base_dir, index, role_styles)
+    summary = _add_modules(slide, modules, base_dir, index, role_styles, catalog)
     for position, entry in enumerate(summary):
         entry["panel"] = position + 1
         entry["whitespace"] = round(whitespaces[position], 4)
     return summary
 
 
-def _add_modules(slide, modules, base_dir, index, role_styles=True):
+def _add_modules(slide, modules, base_dir, index, role_styles=True, catalog=None):
     from pptx.dml.color import RGBColor
     from pptx.enum.dml import MSO_LINE_DASH_STYLE
     from pptx.enum.shapes import MSO_SHAPE
@@ -579,7 +599,7 @@ def _add_modules(slide, modules, base_dir, index, role_styles=True):
             target = (left, top, size[0], size[1])
             if "text" in item or "paragraphs" in item or "citation" in item:
                 placed_shape = _add_text_item(slide, left, top, target, item, module_index, item_index,
-                                              role_styles)
+                                              role_styles, catalog)
             elif "image" in item:
                 placed_shape = _add_image_item(slide, left, top, target, item, module_index, item_index, base_dir)
             else:
@@ -617,7 +637,7 @@ def _apply_title_style(shape, style):
 
 
 def _add_layout_page(prs, layout, page, index, title_style=None, title_xml=None, base_dir=None,
-                     role_styles=True):
+                     role_styles=True, catalog=None):
     from pptx.enum.shapes import PP_PLACEHOLDER
     from pptx.util import Mm, Pt
     slide = prs.slides.add_slide(layout)
@@ -667,11 +687,11 @@ def _add_layout_page(prs, layout, page, index, title_style=None, title_xml=None,
     if panels:
         if modules or body:
             raise ValueError(f"Page {index}: use 'panels', 'modules' or 'body' alone, not a combination")
-        page["_module_summary"] = _add_panels(slide, panels, base_dir or Path.cwd(), index, role_styles)
+        page["_module_summary"] = _add_panels(slide, panels, base_dir or Path.cwd(), index, role_styles, catalog)
     elif modules:
         if body:
             raise ValueError(f"Page {index}: use 'modules' or 'body', not both")
-        page["_module_summary"] = _add_modules(slide, modules, base_dir or Path.cwd(), index, role_styles)
+        page["_module_summary"] = _add_modules(slide, modules, base_dir or Path.cwd(), index, role_styles, catalog)
     return slide
 
 
@@ -728,6 +748,7 @@ def build(template_dir, spec, output, force=False):
               zip([prototype["id"] for prototype in descriptor.get("prototypes", [])], presentation.slides)}
     used, order, manifest_pages = set(), [], []
     default_role_styles = bool(document.get("role_styles", True))
+    catalog = merge_styles(document.get("text_styles") or descriptor.get("text_styles"))
     for index, page in enumerate(pages, 1):
         if not isinstance(page, dict):
             raise ValueError(f"Page {index} must be an object")
@@ -752,7 +773,7 @@ def build(template_dir, spec, output, force=False):
             content_style = descriptor.get("content_style", {})
             slide = _add_layout_page(presentation, layout, page, index, content_style.get("title"),
                                      content_style.get("title_xml"), base_dir,
-                                     bool(page.get("role_styles", default_role_styles)))
+                                     bool(page.get("role_styles", default_role_styles)), catalog)
             order.append(slide)
             record = {"page": index, "kind": "layout", "layout": layout.name,
                       "title": page.get("title", "")}
