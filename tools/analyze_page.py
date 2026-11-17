@@ -520,6 +520,70 @@ def overlap(first, second, tolerance=0.2):
 
 
 
+
+def _wrap_lines(text, width_mm, font_pt):
+    capacity = max(1.0, width_mm * 72 / 25.4 / font_pt)
+    lines = []
+    for paragraph in text.split("\n"):
+        current, used = "", 0.0
+        for char in paragraph:
+            width = 1.0 if unicodedata.east_asian_width(char) in "WF" else 0.5
+            if used + width > capacity and current:
+                lines.append(current)
+                current, used = char, width
+            else:
+                current += char
+                used += width
+        lines.append(current)
+    return lines
+
+
+def _orphan_last_line(text, width_mm, font_pt):
+    lines = _wrap_lines(text, width_mm, font_pt)
+    if len(lines) <= 1:
+        return False
+    return 0 < text_em(lines[-1].strip()) <= 2.01
+
+
+def fix_orphans(payload, rect, inner, wrap):
+    """Avoid a last line of only one or two characters by resizing the box."""
+    if not wrap or "paragraphs" not in payload:
+        return rect
+    text = payload_plain_text(payload).strip()
+    if not text:
+        return rect
+    size = float(payload.get("font_pt") or 14)
+    width = max(1.0, rect[2] - 1.0)
+    changed = False
+    for _ in range(24):
+        if not _orphan_last_line(text, width, size):
+            break
+        grown = False
+        if rect[0] + rect[2] + 0.5 <= inner[0] + inner[2] - 0.2:
+            rect[2] += 0.5
+            grown = True
+        elif rect[0] - 0.5 >= inner[0] + 0.2:
+            rect[0] -= 0.5
+            rect[2] += 0.5
+            grown = True
+        if grown:
+            changed = True
+            width = max(1.0, rect[2] - 1.0)
+            continue
+        if size <= 10.0:
+            break
+        size = round(size - 0.5, 1)
+        payload["font_pt"] = size
+        changed = True
+    return rect
+
+
+def _citation_band(inner, font_pt=12.0):
+    line_h = font_pt * 1.35 * 25.4 / 72
+    top = inner[1] + inner[3] - 2.0 - line_h - 1.5
+    return [inner[0], top, inner[2], inner[1] + inner[3] - top]
+
+
 def _box_mm(box, inner):
     return [inner[0] + box[0] * inner[2], inner[1] + box[1] * inner[3],
             box[2] * inner[2], box[3] * inner[3]]
@@ -532,9 +596,10 @@ def _boxes_overlap(first, second, tolerance=0.4):
             and second[1] < first[1] + first[3] - tolerance)
 
 
-def _resolve_collisions(entries, inner, images):
+def _resolve_collisions(entries, inner, images, has_citations=False):
     """Nudge or shrink text that would visibly collide after size normalisation."""
     entries.sort(key=lambda entry: entry["payload"]["box"][1])
+    band = _citation_band(inner) if has_citations else None
     placed = []
     for entry in entries:
         payload = entry["payload"]
@@ -546,9 +611,17 @@ def _resolve_collisions(entries, inner, images):
             if needed > rect[3]:
                 rect[3] = needed
         if payload.get("overlay"):
+            if band is not None and payload.get("annotation") != "citation":
+                depth = min(rect[1] + rect[3], band[1] + band[3]) - max(rect[1], band[1])
+                if depth > 0.2 and rect[1] < band[1] and rect[1] - depth - 0.6 >= inner[1]:
+                    rect[1] -= depth + 0.6
+                    payload["box"] = [(rect[0] - inner[0]) / inner[2], (rect[1] - inner[1]) / inner[3],
+                                      rect[2] / inner[2], rect[3] / inner[3]]
             placed.append(rect)
             continue
         obstacles = list(placed)
+        if band is not None and payload.get("annotation") != "citation":
+            obstacles.append(band)
         for image in images:
             depth = min(rect[1] + rect[3], image[1] + image[3]) - max(rect[1], image[1])
             if depth > 0.3 and rect[1] < image[1] and depth < 7 and _boxes_overlap(rect, image):
@@ -607,7 +680,7 @@ def _resolve_collisions(entries, inner, images):
     return entries
 
 
-def clip(item_rect, area):
+def clip(item_rect, area, min_ratio=0.5):
     left = max(item_rect[0], area[0])
     top = max(item_rect[1], area[1])
     right = min(item_rect[0] + item_rect[2], area[0] + area[2])
@@ -616,7 +689,7 @@ def clip(item_rect, area):
         return None
     original = item_rect[2] * item_rect[3]
     clipped = [left, top, right - left, bottom - top]
-    return clipped if (clipped[2] * clipped[3]) / original >= 0.5 else None
+    return clipped if (clipped[2] * clipped[3]) / original >= min_ratio else None
 
 
 def fit_text(payload, rect, inner):
@@ -699,7 +772,9 @@ def analyse_slide(slide, number, colors, assets, asset_prefix, size_mm, padding=
             payload = text_payload(shape, colors, fonts or {}, catalog=catalog, palette=palette)
             if payload is not None:
                 items.append({"rect": rect, **payload})
-    modules = [{"rect": frame["rect"], "padding_mm": padding, "border": frame["border"],
+    modules = [{"rect": frame["rect"],
+                "padding_mm": (0.9 if frame["rect"][3] < 16 else padding),
+                "_thin": frame["rect"][3] < 16, "border": frame["border"],
                 **({"radius_mm": frame["radius_mm"]} if frame.get("radius_mm") else {}),
                 **({"fill": frame["fill"]} if frame.get("fill") else {}),
                 "items": [], "_inner": [frame["rect"][0] + padding, frame["rect"][1] + padding,
@@ -707,6 +782,11 @@ def analyse_slide(slide, number, colors, assets, asset_prefix, size_mm, padding=
                for frame in frames]
     page_module = {"rect": list(CONTENT_AREA), "padding_mm": 0.0, "border": None,
                    "items": [], "_inner": list(CONTENT_AREA)}
+    import os as _os
+    if _os.environ.get("DEBUG_ANALYZE"):
+        for entry in items:
+            label = entry.get("image") or "".join(r.get("text", "") for p in entry.get("paragraphs", []) for r in p["runs"])
+            print("DEBUG item:", [round(v,1) for v in entry["rect"]], label[:24])
     for item in items:
         center = [item["rect"][0] + item["rect"][2] / 2, item["rect"][1] + item["rect"][3] / 2]
         target = page_module
@@ -717,10 +797,13 @@ def analyse_slide(slide, number, colors, assets, asset_prefix, size_mm, padding=
                         module["rect"][1] <= center[1] <= module["rect"][1] + module["rect"][3])
             # References sit right at the frame edge, so judge them by the frame
             # instead of the padded inner area; their box is clamped later.
-            if in_inner or (item.get("annotation") == "citation" and in_frame):
+            if in_inner or (module.get("_thin") and in_frame) or (item.get("annotation") == "citation" and in_frame):
                 target = module
                 break
         target["items"].append(item)
+    import os as _os
+    if _os.environ.get("DEBUG_ANALYZE"):
+        print("DEBUG modules:", [(len(m["items"]), m["rect"][3]) for m in modules], "page:", len(page_module["items"]))
     result = []
     for module in [*modules, page_module]:
         inner = module.pop("_inner")
@@ -728,11 +811,14 @@ def analyse_slide(slide, number, colors, assets, asset_prefix, size_mm, padding=
         boxes = []
         rendered = []
         for item in list(module["items"]):
-            rect = clip(item["rect"], inner)
+            rect = clip(item["rect"], inner, 0.1 if module.get("_thin") else 0.5)
             if rect is None:
                 continue
             if "text" in item or "paragraphs" in item or "citation" in item:
                 rect = fit_text(item, list(rect), inner)
+                if "paragraphs" in item:
+                    rect = fix_orphans(item, list(rect), inner,
+                                       item.get("word_wrap", True) is not False)
             box = [(rect[0] - inner[0]) / inner[2], (rect[1] - inner[1]) / inner[3],
                    rect[2] / inner[2], rect[3] / inner[3]]
             box = [round(max(0.0, min(1.0, value)), 5) for value in box]
@@ -757,9 +843,12 @@ def analyse_slide(slide, number, colors, assets, asset_prefix, size_mm, padding=
                     break
             boxes.append((payload, box))
             rendered.append(payload)
+        has_citations = any(entry.get("annotation") == "citation" for entry in rendered)
         module["items"] = _resolve_collisions(
-            [{"payload": entry} for entry in rendered], inner, images)
+            [{"payload": entry} for entry in rendered], inner, images, has_citations)
         module["items"] = [entry["payload"] for entry in module["items"]]
+        if _os.environ.get("DEBUG_ANALYZE"):
+            print("DEBUG result module:", [round(v,1) for v in module["rect"]], "items:", len(module["items"]))
         if module["items"] or module.get("fill"):
             result.append(module)
     return {"number": number, "title": title, "title_xml": title_xml,
