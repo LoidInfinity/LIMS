@@ -586,6 +586,41 @@ def _citation_band(inner, font_pt=12.0):
 
 
 
+
+def _picture_content_box(path):
+    """Fractional content bbox of a picture: trims transparent/white margins."""
+    try:
+        from PIL import Image
+        with Image.open(path) as bitmap:
+            rgba = bitmap.convert("RGBA")
+            width, height = rgba.size
+            if width < 4 or height < 4:
+                return None
+            pixels = rgba.load()
+            background = (255, 255, 255, 255)
+            left, top, right, bottom = width, height, -1, -1
+            for y in range(height):
+                for x in range(width):
+                    r, g, b, a = pixels[x, y]
+                    if a > 16 and not (r > 246 and g > 246 and b > 246):
+                        if x < left:
+                            left = x
+                        if x > right:
+                            right = x
+                        if y < top:
+                            top = y
+                        if y > bottom:
+                            bottom = y
+            if right < left or bottom < top:
+                return None
+            if left <= 1 and top <= 1 and right >= width - 2 and bottom >= height - 2:
+                return None
+            return [round(left / width, 4), round(top / height, 4),
+                    round((width - 1 - right) / width, 4), round((height - 1 - bottom) / height, 4)]
+    except Exception:
+        return None
+
+
 def _payload_ink(payload, rect, inner):
     """Actual glyph extent for text payloads; images use their placement rect."""
     if "paragraphs" not in payload and "text" not in payload:
@@ -652,9 +687,9 @@ def _resolve_collisions(entries, inner, images, has_citations=False):
                     payload["box"] = [(rect[0] - inner[0]) / inner[2], (rect[1] - inner[1]) / inner[3],
                                       rect[2] / inner[2], rect[3] / inner[3]]
         attempts = [0.0]
-        for step in range(1, 51):
+        for step in range(1, 13):
             attempts.append(round(step * 0.5, 2))
-        for step in range(1, 21):
+        for step in range(1, 7):
             attempts.append(round(-step * 0.5, 2))
         for delta in attempts:
             candidate = [rect[0], rect[1] + delta, rect[2], rect[3]]
@@ -838,7 +873,7 @@ def _settle_page_ink(result, page_index):
         for target in (second, first):
             inner = target["inner"]
             base = rects[id(target)]
-            for step in range(1, 81):
+            for step in range(1, 13):
                 for direction in (1, -1):
                     delta = direction * step * 0.5
                     candidate = [base[0], base[1] + delta, base[2], base[3]]
@@ -890,7 +925,8 @@ def _reserve_citation_band(result):
             overflow = (ink[1] + ink[3]) - band_top
             if overflow <= 0.3:
                 continue
-            new_y = item["box"][1] - overflow / inner[3]
+            shift = min(overflow, 5.0) / inner[3]
+            new_y = item["box"][1] - shift
             if new_y * inner[3] + inner[1] >= inner[1]:
                 item["box"][1] = max(0.0, new_y)
             else:
@@ -941,6 +977,9 @@ def analyse_slide(slide, number, colors, assets, asset_prefix, size_mm, padding=
                 if value:
                     crop[side] = round(float(value), 4)
             item = {"rect": rect, "image": f"{asset_prefix}/{target.name}"}
+            content = _picture_content_box(target)
+            if content is not None:
+                item["content_box"] = content
             if crop:
                 item["crop"] = crop
             items.append(item)

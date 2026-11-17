@@ -146,10 +146,20 @@ def text_ink_rect(box, text, style, insets=(0.0, 0.0, 0.0, 0.0), line_spacing_pc
     else:
         width_mm, _ = measure_text(text, font_pt, latin, cjk)
         lines = max(1, len((text or "").split("\n")))
-    # Calibrated on rendered slides: glyph ink starts ~0.20em below the line top
-    # and is ~0.93em tall; consecutive lines advance by 1.2em.
-    glyph_offset_mm = 0.20 * em_mm
-    glyph_height_mm = 0.93 * em_mm + (lines - 1) * 1.2 * em_mm * spacing
+    # Calibrated on rendered slides: CJK glyphs start ~0.20-0.23em below the line
+    # top and are ~0.93em tall, while Calibri starts ~0.26em down and is ~0.85em
+    # tall; consecutive lines advance by 1.2em.
+    text_body = text or ""
+    cjk_count = sum(1 for char in text_body if unicodedata.east_asian_width(char) in "WF")
+    latin_count = sum(1 for char in text_body if char.isascii() and not char.isspace())
+    if latin_count > cjk_count:
+        offset_ratio, height_ratio = 0.26, 0.85
+    elif "宋体" in cjk:
+        offset_ratio, height_ratio = 0.23, 0.93
+    else:
+        offset_ratio, height_ratio = 0.20, 0.93
+    glyph_offset_mm = offset_ratio * em_mm
+    glyph_height_mm = height_ratio * em_mm + (lines - 1) * 1.2 * em_mm * spacing
     line_box_mm = (lines - 1) * 1.2 * em_mm * spacing + em_mm
     height_mm = glyph_height_mm
     spacing = 1.0 if not line_spacing_pct else float(line_spacing_pct) / 100
@@ -353,6 +363,11 @@ def payload_collision_rect(payload, box):
     if payload.get("annotation") == "badge":
         return list(box)
     if "image" in payload:
+        content = payload.get("content_box")
+        if isinstance(content, (list, tuple)) and len(content) == 4:
+            left, top, right, bottom = (float(value) for value in content)
+            return [box[0] + left * box[2], box[1] + top * box[3],
+                    max(0.5, box[2] * (1 - left - right)), max(0.5, box[3] * (1 - top - bottom))]
         return list(box)
     style = {
         "font_pt": payload.get("font_pt") or 14,
@@ -363,9 +378,11 @@ def payload_collision_rect(payload, box):
         "bullet": payload.get("bullet"),
     }
     insets = payload.get("insets_mm") or [0.0, 0.0, 0.0, 0.0]
+    wrap = payload.get("word_wrap", True) is not False
+    if payload.get("annotation") == "citation":
+        wrap = False  # references are deliberately rendered on a single line
     return text_ink_rect(list(box), payload_text(payload), style, insets,
-                         payload.get("line_spacing_pct"),
-                         wrap=payload.get("word_wrap", True) is not False)
+                         payload.get("line_spacing_pct"), wrap=wrap)
 
 
 def merge_styles(override=None, base=None):

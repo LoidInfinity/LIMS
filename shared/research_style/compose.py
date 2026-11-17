@@ -796,10 +796,10 @@ def _repair_collisions(entries, notes=None):
         moved = False
         for payload, rect, shape, inner in candidates:
             attempts = []
-            for step in range(1, 41):
+            for step in range(1, 9):
                 attempts.append((0.0, step * 0.5))
                 attempts.append((0.0, -step * 0.5))
-            for step in range(1, 41):
+            for step in range(1, 5):
                 attempts.append((step * 0.5, 0.0))
                 attempts.append((-step * 0.5, 0.0))
             for dx, delta in attempts:
