@@ -985,6 +985,7 @@ def _add_modules(slide, modules, base_dir, index, role_styles=True, catalog=None
             "exempt": bool(payload.get("overlay") or payload.get("special")),
             "label": (payload_text(payload)[:20] or "<image>"),
             "rect_mm": [round(value, 2) for value in record["rect"]],
+            "shape_id": int(record["shape"].shape_id),
         })
     if page is not None:
         page["_collision_boxes"] = page_records
