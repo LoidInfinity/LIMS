@@ -159,7 +159,9 @@ def text_ink_rect(box, text, style, insets=(0.0, 0.0, 0.0, 0.0), line_spacing_pc
         offset_ratio, height_ratio = 0.23, 0.93
     else:
         offset_ratio, height_ratio = 0.20, 0.93
-    glyph_offset_mm = offset_ratio * em_mm
+    # Proportional line spacing pushes the first line down as well: calibrated
+    # as +0.65em per extra 100% (0.20em at 100%, ~0.53em at 150%).
+    glyph_offset_mm = (offset_ratio + 0.65 * max(0.0, spacing - 1.0)) * em_mm
     glyph_height_mm = height_ratio * em_mm + (lines - 1) * 1.2 * em_mm * spacing
     line_box_mm = (lines - 1) * 1.2 * em_mm * spacing + em_mm
     height_mm = glyph_height_mm

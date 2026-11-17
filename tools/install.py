@@ -38,7 +38,7 @@ def install(destination, names=SKILLS):
             shutil.copytree(ROOT / "shared" / "styles", target / "assets" / "styles")
             shutil.copy2(ROOT / "requirements.txt", target / "assets" / "requirements.txt")
             write_json(target / "assets" / "styles" / "current.json", style)
-            write_json(target / "assets" / "suite.json", {"suite": SUITE_ID, "version": "0.15.1", "skill": name})
+            write_json(target / "assets" / "suite.json", {"suite": SUITE_ID, "version": "0.15.2", "skill": name})
         try:
             for name in names:
                 os.rename(staging / name, destination / name)

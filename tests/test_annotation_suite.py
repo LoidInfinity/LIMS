@@ -136,6 +136,8 @@ class AnnotationTests(unittest.TestCase):
         # 150% line spacing must be applied once, and the trailing empty
         # paragraph must not add another inked line.
         self.assertAlmostEqual(rect[3], 0.93 * em + 1.2 * em * 1.5, delta=0.25)
+        # 150% spacing also pushes the first inked line down by ~0.53em.
+        self.assertAlmostEqual(rect[1], (0.20 + 0.65 * 0.5) * em, delta=0.2)
 
     def test_emphasis_color_roles(self):
         from research_style.annotation import (DEFAULT_TEXT_COLORS, color_role_for,
