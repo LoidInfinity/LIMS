@@ -217,10 +217,10 @@ class ComposeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "leaves the module"):
             compose(target, page({"rect": [10, 45, 150, 60], "items": [
                 {"box": [-0.05, 0, 1, 0.2], "text": "越界", "font_pt": 14}]}), out, force=True)
-        with self.assertRaisesRegex(ValueError, "items overlap"):
-            compose(target, page({"rect": [10, 45, 150, 60], "items": [
-                {"box": [0, 0, 0.6, 0.4], "text": "一", "font_pt": 14},
-                {"box": [0.4, 0.2, 0.6, 0.4], "text": "二", "font_pt": 14}]}), out, force=True)
+        # Overlapping items are repaired when there is room; dense cases fail hard.
+        compose(target, page({"rect": [10, 45, 150, 60], "items": [
+            {"box": [0, 0, 0.6, 0.4], "text": "一", "font_pt": 14},
+            {"box": [0.4, 0.2, 0.6, 0.4], "text": "二", "font_pt": 14}]}), out, force=True)
         with self.assertRaisesRegex(ValueError, "needs .* mm but its box"):
             compose(target, page({"rect": [10, 45, 150, 60], "items": [
                 {"box": [0, 0, 1.0, 0.05], "text": "很长很长的一段文字" * 6, "font_pt": 20}]}), out, force=True)
@@ -473,6 +473,46 @@ class ComposeTests(unittest.TestCase):
         self.assertEqual(label.text_frame.paragraphs[0].alignment, PP_ALIGN.CENTER)
         self.assertGreater(label.width / 36000, 40, "plate grows to fit the canonical font")
         self.assertEqual(label.text_frame.paragraphs[0].runs[0].font.size.pt, 20)
+
+    def test_hard_collision_check(self):
+        from pptx import Presentation
+        descriptor, target = self.template()
+        layout = self.layout_index(descriptor, "Title and Content")
+        overlapping = {"template": descriptor["id"], "pages": [{
+            "layout": layout, "title": "重叠",
+            "modules": [{"rect": [10, 45, 300, 14], "padding_mm": 2.0, "items": [
+                {"box": [0, 0, 1.0, 0.9], "annotation": "body",
+                 "text": "第一段文字内容比较长需要占满这一行的宽度看看重叠"},
+                {"box": [0.1, 0.05, 0.9, 0.9], "annotation": "body",
+                 "text": "第二段文字内容也比较长同样会覆盖到左边那一段文字"}]}]}]}
+        with self.assertRaisesRegex(ValueError, "content borders intersect"):
+            compose(target, overlapping, self.root / "overlap.pptx", force=True)
+
+        exempt = {"template": descriptor["id"], "pages": [{
+            "layout": layout, "title": "重叠",
+            "modules": [{"rect": [10, 45, 300, 14], "padding_mm": 2.0, "items": [
+                {"box": [0, 0, 1.0, 0.9], "annotation": "body",
+                 "text": "第一段文字内容比较长需要占满这一行的宽度看看重叠"},
+                {"box": [0.1, 0.05, 0.9, 0.9], "annotation": "body",
+                 "text": "第二段文字内容也比较长同样会覆盖到左边那一段文字",
+                 "special": True}]}]}]}
+        compose(target, exempt, self.root / "exempt.pptx", force=True)
+        self.assertTrue((self.root / "exempt.pptx").is_file())
+
+    def test_badge_text_is_contained_not_colliding(self):
+        from pptx import Presentation
+        descriptor, target = self.template()
+        layout = self.layout_index(descriptor, "Title and Content")
+        spec = {"template": descriptor["id"], "pages": [{
+            "layout": layout, "title": "徽标",
+            "modules": [{"rect": [10, 45, 300, 60], "padding_mm": 2.0, "items": [
+                {"box": [0, 0, 0.4, 0.15], "annotation": "badge",
+                 "badge": {"fill": {"color": "#4472C4", "alpha_pct": 50}},
+                 "paragraphs": [{"runs": [{"text": "热扩散效应"}]}], "font_pt": 20,
+                 "word_wrap": False},
+                {"box": [0.0, 0.3, 0.5, 0.15], "annotation": "body", "text": "下方正文"}]}]}]}
+        compose(target, spec, self.root / "badge2.pptx", force=True)
+        self.assertTrue((self.root / "badge2.pptx").is_file())
 
     def test_fitted_textbox_centers_rewritten_text(self):
         from pptx import Presentation

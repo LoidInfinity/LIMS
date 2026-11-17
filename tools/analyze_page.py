@@ -22,8 +22,8 @@ SHARED = Path(__file__).resolve().parents[1] / "shared"
 if str(SHARED) not in sys.path:
     sys.path.insert(0, str(SHARED))
 from research_style.annotation import (classify, color_role_for, load_catalog,
-                                       merge_text_colors, parse_citation, run_annotation,
-                                       text_ink_rect)
+                                       merge_text_colors, parse_citation, payload_collision_rect,
+                                       run_annotation, text_ink_rect)
 import colorsys
 
 P = "http://schemas.openxmlformats.org/presentationml/2006/main"
@@ -628,7 +628,7 @@ def _resolve_collisions(entries, inner, images, has_citations=False):
             needed = text_height_mm(plain, rect[2] - 1.0, size)
             if needed > rect[3]:
                 rect[3] = needed
-        if payload.get("annotation") == "badge":
+        if payload.get("annotation") == "badge" or payload.get("special"):
             placed.append(rect)
             continue
         if payload.get("overlay"):
@@ -664,7 +664,8 @@ def _resolve_collisions(entries, inner, images, has_citations=False):
                 rect = candidate
                 break
         else:
-            payload["overlay"] = True
+            # Leave it to the page settling pass; do not pre-exempt here.
+            pass
         # Overflow height may exceed the module, but the stored box must stay
         # inside the inner area; the allow_overflow flag lets the renderer keep
         # the canonical font size and let glyphs spill instead.
@@ -787,6 +788,86 @@ def _badge_item(shape, colors, fonts, catalog, palette):
     return payload
 
 
+
+def _settle_page_ink(result, page_index):
+    """Last pass: clear remaining content-border intersections.
+
+    Elements are moved in small steps until their ink borders are disjoint; an
+    element that cannot be separated anywhere is marked as an intentional
+    overlay so the composer's hard check reports it instead of failing.
+    """
+    records = []
+    for module in result:
+        pad = float(module.get("padding_mm", 0.0))
+        inner = [module["rect"][0] + pad, module["rect"][1] + pad,
+                 max(1.0, module["rect"][2] - 2 * pad), max(1.0, module["rect"][3] - 2 * pad)]
+        for item in module["items"]:
+            records.append({"item": item, "inner": inner})
+
+    def exempt(record):
+        item = record["item"]
+        if item.get("annotation") == "citation":
+            return False  # references are content, never special
+        return (item.get("overlay") or item.get("special")
+                or item.get("annotation") == "badge")
+
+    def rect_of(record):
+        return payload_collision_rect(record["item"],
+                                      _box_mm(record["item"]["box"], record["inner"]))
+
+    for _ in range(400):
+        active = [record for record in records if not exempt(record)]
+        rects = {id(record): rect_of(record) for record in active}
+        found = None
+        for position, first in enumerate(active):
+            for second in active[position + 1:]:
+                if _boxes_overlap(rects[id(first)], rects[id(second)], tolerance=0.05):
+                    found = (first, second)
+                    break
+            if found:
+                break
+        if found is None:
+            # Everything is disjoint now: stale auto-overlay flags on references
+            # must not turn them into special content.
+            for record in records:
+                if record["item"].get("annotation") == "citation":
+                    record["item"].pop("overlay", None)
+            return
+        first, second = found
+        moved = False
+        for target in (second, first):
+            inner = target["inner"]
+            base = rects[id(target)]
+            for step in range(1, 81):
+                for direction in (1, -1):
+                    delta = direction * step * 0.5
+                    candidate = [base[0], base[1] + delta, base[2], base[3]]
+                    if candidate[1] < inner[1] or candidate[1] + candidate[3] > inner[1] + inner[3]:
+                        continue
+                    target["item"]["box"][1] += delta / inner[3]
+                    new_rect = rect_of(target)
+                    clash = any(_boxes_overlap(new_rect, rects[id(other)], tolerance=0.05)
+                                for other in active if other is not target)
+                    if not clash:
+                        moved = True
+                        break
+                    target["item"]["box"][1] -= delta / inner[3]
+                if moved:
+                    break
+            if moved:
+                break
+        if not moved:
+            # References are never special: exempt the other element instead.
+            first_is_citation = first["item"].get("annotation") == "citation"
+            second_is_citation = second["item"].get("annotation") == "citation"
+            if first_is_citation and not second_is_citation:
+                second["item"]["overlay"] = True
+            elif second_is_citation and not first_is_citation:
+                first["item"]["overlay"] = True
+            else:
+                second["item"]["overlay"] = True
+
+
 def analyse_slide(slide, number, colors, assets, asset_prefix, size_mm, padding=1.0, fonts=None,
                   catalog=None, palette=None):
     from lxml import etree
@@ -896,7 +977,7 @@ def analyse_slide(slide, number, colors, assets, asset_prefix, size_mm, padding=
             if "image" in item:
                 payload["image"] = item["image"]
             else:
-                for key in ("text", "paragraphs", "role", "annotation", "citation", "badge", "font_pt",
+                for key in ("text", "paragraphs", "role", "annotation", "citation", "badge", "special", "font_pt",
                             "allow_overflow",
                             "bold", "italic", "color", "color_role", "align", "anchor", "font_latin",
                             "font_cjk", "font_cs", "bullet", "line_spacing_pct", "space_after_pt",
@@ -904,27 +985,37 @@ def analyse_slide(slide, number, colors, assets, asset_prefix, size_mm, padding=
                     if key in item:
                         payload[key] = item[key]
                 payload.setdefault("font_pt", 18)
-            ink = _payload_ink(payload, [box[0] * inner[2] + inner[0], box[1] * inner[3] + inner[1],
-                                         box[2] * inner[2], box[3] * inner[3]], inner)
-            for existing_payload, existing_box in boxes:
-                existing_ink = _payload_ink(existing_payload,
-                                            [existing_box[0] * inner[2] + inner[0],
-                                             existing_box[1] * inner[3] + inner[1],
-                                             existing_box[2] * inner[2], existing_box[3] * inner[3]], inner)
-                if _boxes_overlap(ink, existing_ink, tolerance=0.2):
-                    if "image" in existing_payload or "image" in payload:
-                        payload["overlay"] = True
-                    break
             boxes.append((payload, box))
             rendered.append(payload)
         has_citations = any(entry.get("annotation") == "citation" for entry in rendered)
         module["items"] = _resolve_collisions(
             [{"payload": entry} for entry in rendered], inner, images, has_citations)
         module["items"] = [entry["payload"] for entry in module["items"]]
+        image_rects = images
+        for index_item, item in enumerate(module["items"]):
+            if "paragraphs" not in item and "text" not in item:
+                continue
+            if item.get("annotation") == "citation":
+                continue
+            ink = _payload_ink(item, _box_mm(item["box"], inner), inner)
+            ink_area = max(0.001, ink[2] * ink[3])
+            for image_rect in image_rects:
+                overlap_w = min(ink[0] + ink[2], image_rect[0] + image_rect[2]) - max(ink[0], image_rect[0])
+                overlap_h = min(ink[1] + ink[3], image_rect[1] + image_rect[3]) - max(ink[1], image_rect[1])
+                inside = (ink[0] >= image_rect[0] - 0.5 and ink[1] >= image_rect[1] - 0.5
+                          and ink[0] + ink[2] <= image_rect[0] + image_rect[2] + 0.5
+                          and ink[1] + ink[3] <= image_rect[1] + image_rect[3] + 0.5)
+                image_area = max(0.001, image_rect[2] * image_rect[3])
+                # Only small labels that live inside a figure are intentional
+                # text-over-image content; anything else must not intersect.
+                if inside and ink_area < 0.25 * image_area:
+                    item["special"] = True
+                    break
         if _os.environ.get("DEBUG_ANALYZE"):
             print("DEBUG result module:", [round(v,1) for v in module["rect"]], "items:", len(module["items"]))
         if module["items"] or module.get("fill"):
             result.append(module)
+    _settle_page_ink(result, number)
     return {"number": number, "title": title, "title_xml": title_xml,
             "layout_part": layout_part, "modules": result}
 

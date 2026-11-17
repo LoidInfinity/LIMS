@@ -15,7 +15,7 @@ from pathlib import Path
 import unicodedata
 
 from .annotation import (citation_segments, measure_text, merge_styles, merge_text_colors,
-                         part_style, style_for)
+                         part_style, payload_collision_rect, payload_text, style_for)
 from .core import atomic_bytes, preflight_outputs, read_json, write_json
 from .template import DESCRIPTOR_NAME, descriptor_sha256, load_descriptor, template_root
 
@@ -461,7 +461,7 @@ def _add_badge_background(slide, rect, badge):
 
 
 def _add_text_item(slide, left_mm, top_mm, box, item, module_index, item_index,
-                   role_styles=True, catalog=None):
+                   role_styles=True, catalog=None, bounds=None):
     from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
     from pptx.util import Mm, Pt
     catalog = catalog or {}
@@ -484,6 +484,11 @@ def _add_text_item(slide, left_mm, top_mm, box, item, module_index, item_index,
     badge = item.get("badge") if isinstance(item.get("badge"), dict) else None
     if badge:
         rect = _badge_rect([left_mm, top_mm, box[2], box[3]], item, style)
+        if bounds is not None:
+            rect[0] = max(bounds[0], min(rect[0], bounds[0] + bounds[2] - rect[2]))
+            rect[1] = max(bounds[1], min(rect[1], bounds[1] + bounds[3] - rect[3]))
+            rect[2] = min(rect[2], bounds[2])
+            rect[3] = min(rect[3], bounds[3])
         box = [rect[0], rect[1], rect[2], rect[3]]
         left_mm, top_mm = rect[0], rect[1]
         style.setdefault("align", "center")
@@ -728,15 +733,84 @@ def _citation_boxes(citations, inner):
     return layout
 
 
+COLLISION_EPSILON = 0.05
+
+
+def _intersects(first, second, epsilon=COLLISION_EPSILON):
+    return (first[0] < second[0] + second[2] - epsilon
+            and second[0] < first[0] + first[2] - epsilon
+            and first[1] < second[1] + second[3] - epsilon
+            and second[1] < first[1] + first[3] - epsilon)
+
+
+def _is_exempt(payload):
+    return bool(payload.get("overlay") or payload.get("special"))
+
+
+def _hard_check_page(records, index):
+    """Every element's content border must be disjoint; special items are exempt."""
+    violations = []
+    for position, (payload, rect) in enumerate(records):
+        if _is_exempt(payload):
+            continue
+        for other_payload, other_rect in records[position + 1:]:
+            if _is_exempt(other_payload):
+                continue
+            if _intersects(rect, other_rect):
+                violations.append((payload_text(payload)[:24] or "<image>",
+                                   payload_text(other_payload)[:24] or "<image>", rect, other_rect))
+    if violations:
+        detail = "; ".join(f"{first!r} x {second!r}" for first, second, _, _ in violations[:6])
+        raise ValueError(f"Page {index}: content borders intersect ({len(violations)} pair(s)): {detail}. "
+                         "Mark intentionally overlapping items with \"overlay\": true or fix the layout.")
+
+
+def _repair_collisions(entries, notes=None):
+    """Move non-exempt elements vertically/horizontally until content borders clear."""
+    from pptx.util import Mm as _Mm
+    for _ in range(60):
+        collision = None
+        for position, (payload, rect, shape, inner) in enumerate(entries):
+            if _is_exempt(payload):
+                continue
+            for other_payload, other_rect, _, _ in entries[position + 1:]:
+                if _is_exempt(other_payload):
+                    continue
+                if _intersects(rect, other_rect):
+                    collision = (payload, rect, shape, inner, other_rect)
+                    break
+            if collision:
+                break
+        if collision is None:
+            return
+        payload, rect, shape, inner, other_rect = collision
+        moved = False
+        for delta in [step * 0.5 for step in range(1, 41)] + [-step * 0.5 for step in range(1, 21)]:
+            candidate = [rect[0], rect[1] + delta, rect[2], rect[3]]
+            if candidate[1] < inner[1] or candidate[1] + candidate[3] > inner[1] + inner[3]:
+                continue
+            if not _intersects(candidate, other_rect):
+                rect[1] = candidate[1]
+                shape.top = _Mm(rect[1])
+                payload["box"] = [(rect[0] - inner[0]) / inner[2], (rect[1] - inner[1]) / inner[3],
+                                  rect[2] / inner[2], rect[3] / inner[3]]
+                moved = True
+                break
+        if not moved:
+            # Leave the element where it is; the hard check below reports the
+            # violation instead of silently exempting it.
+            return
+
+
 def _add_modules(slide, modules, base_dir, index, role_styles=True, catalog=None,
-                 citation_layout="below_image"):
+                 citation_layout="below_image", warnings=None):
     from pptx.dml.color import RGBColor
     from pptx.enum.dml import MSO_LINE_DASH_STYLE
     from pptx.enum.shapes import MSO_SHAPE
     from pptx.util import Mm, Pt
     if not isinstance(modules, list) or not modules:
         raise ValueError(f"Page {index}: modules must be a nonempty list")
-    placed, summary = [], []
+    placed, summary, collision_records = [], [], []
     for module_index, module in enumerate(modules, 1):
         if not isinstance(module, dict):
             raise ValueError(f"Page {index}: module {module_index} must be an object")
@@ -803,13 +877,6 @@ def _add_modules(slide, modules, base_dir, index, role_styles=True, catalog=None
             box = _item_box(item, module_index, item_index)
             _check_inside(box, module_index, item_index)
             boxes.append((item, box))
-        for first_index, (first, first_box) in enumerate(boxes):
-            for second, second_box in boxes[first_index + 1:]:
-                if first.get("overlay") or second.get("overlay"):
-                    continue
-                if _overlaps(first_box, second_box):
-                    raise ValueError(f"Page {index}: module {module_index} items overlap; "
-                                     f"mark one item 'overlay': true only if the design intends it")
         mode = module.get("citation_layout") or citation_layout
         if mode == "frame_corner" and any(item.get("annotation") == "citation" for item, _ in boxes):
             citation_items = [item for item, _ in boxes if item.get("annotation") == "citation"]
@@ -840,13 +907,26 @@ def _add_modules(slide, modules, base_dir, index, role_styles=True, catalog=None
                 target = (left, top, size[0], size[1])
             if "text" in item or "paragraphs" in item or "citation" in item:
                 placed_shape = _add_text_item(slide, left, top, target, item, module_index, item_index,
-                                              role_styles, catalog)
+                                              role_styles, catalog, inner)
             elif "image" in item:
                 placed_shape = _add_image_item(slide, left, top, target, item, module_index, item_index, base_dir)
             else:
                 raise ValueError(f"Module {module_index} item {item_index}: needs 'text' or 'image'")
             placed.append((module_index, item_index, placed_shape, inner))
+            collision_records.append({
+                "payload": item,
+                "rect": payload_collision_rect(item, target),
+                "shape": placed_shape,
+                "inner": inner,
+            })
         summary.append({"index": module_index, "rect_mm": rect, "items": len(items)})
+    _repair_collisions([(record["payload"], record["rect"], record["shape"], record["inner"])
+                        for record in collision_records], warnings)
+    for record in collision_records:
+        record["rect"] = payload_collision_rect(record["payload"],
+                                                [record["shape"].left / 36000, record["shape"].top / 36000,
+                                                 record["shape"].width / 36000, record["shape"].height / 36000])
+    _hard_check_page([(record["payload"], record["rect"]) for record in collision_records], index)
     for module_index, item_index, shape, inner in placed:
         tolerance = 6000  # 0.17 mm of rounding slack
         if (shape.left < Mm(inner[0]) - tolerance or shape.top < Mm(inner[1]) - tolerance
@@ -878,7 +958,7 @@ def _apply_title_style(shape, style):
 
 
 def _add_layout_page(prs, layout, page, index, title_style=None, title_xml=None, base_dir=None,
-                     role_styles=True, catalog=None, citation_layout="below_image"):
+                     role_styles=True, catalog=None, citation_layout="below_image", warnings=None):
     from pptx.enum.shapes import PP_PLACEHOLDER
     from pptx.util import Mm, Pt
     slide = prs.slides.add_slide(layout)
@@ -933,7 +1013,7 @@ def _add_layout_page(prs, layout, page, index, title_style=None, title_xml=None,
         if body:
             raise ValueError(f"Page {index}: use 'modules' or 'body', not both")
         page["_module_summary"] = _add_modules(slide, modules, base_dir or Path.cwd(), index, role_styles, catalog,
-                         citation_layout)
+                         citation_layout, warnings)
     return slide
 
 
@@ -989,6 +1069,7 @@ def build(template_dir, spec, output, force=False):
     slides = {prototype_id: slide for prototype_id, slide in
               zip([prototype["id"] for prototype in descriptor.get("prototypes", [])], presentation.slides)}
     used, order, manifest_pages = set(), [], []
+    collision_warnings = []
     default_role_styles = bool(document.get("role_styles", True))
     catalog = merge_styles(document.get("text_styles") or descriptor.get("text_styles"))
     palette = merge_text_colors(document.get("text_colors") or descriptor.get("text_colors"),
@@ -1028,13 +1109,17 @@ def build(template_dir, spec, output, force=False):
         else:
             layout = _layout(presentation, page["layout"], descriptor)
             content_style = descriptor.get("content_style", {})
+            page_warnings = []
             slide = _add_layout_page(presentation, layout, page, index, content_style.get("title"),
                                      content_style.get("title_xml"), base_dir,
                                      bool(page.get("role_styles", default_role_styles)), catalog,
-                                     document.get("citation_layout", "below_image"))
+                                     document.get("citation_layout", "below_image"), page_warnings)
             order.append(slide)
             record = {"page": index, "kind": "layout", "layout": layout.name,
                       "title": page.get("title", "")}
+            if page_warnings:
+                record["collision_exemptions"] = page_warnings
+                collision_warnings.extend(f"page {index}: {name}" for name in page_warnings)
             if page.get("_module_summary"):
                 record["modules"] = page["_module_summary"]
             manifest_pages.append(record)
@@ -1051,6 +1136,7 @@ def build(template_dir, spec, output, force=False):
                      "package": package.name},
         "pages": manifest_pages,
         "warnings": [
+            *collision_warnings,
             "Prototype pages reproduce the template's design verbatim; only listed text slots were rewritten.",
             "Layout pages use the template's layout and placeholders, so free-form decoration from the source deck is not reproduced.",
         ],

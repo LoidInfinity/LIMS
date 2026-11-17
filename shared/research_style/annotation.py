@@ -104,21 +104,52 @@ def measure_text(text, font_pt, latin="Calibri", cjk="黑体"):
     return width_pt * scale * 25.4 / 72, len(lines) * line_pt * 25.4 / 72
 
 
-def text_ink_rect(box, text, style, insets=(0.0, 0.0, 0.0, 0.0), line_spacing_pct=None):
+def _wrap_by_measure(text, width_pt, font_pt, latin, cjk):
+    scale = font_pt / 1000
+    limit = width_pt / scale if scale else width_pt
+    lines = []
+    for paragraph in (text or "").split("\n"):
+        current, used = "", 0.0
+        for char in paragraph:
+            font = _font(cjk) if unicodedata.east_asian_width(char) in "WF" else _font(latin)
+            advance = font.getlength(char)
+            if used + advance > limit and current:
+                lines.append(current)
+                current, used = char, advance
+            else:
+                current += char
+                used += advance
+        lines.append(current)
+    return lines
+
+
+def text_ink_rect(box, text, style, insets=(0.0, 0.0, 0.0, 0.0), line_spacing_pct=None,
+                  wrap=True):
     """Where the glyphs actually sit inside a text box (alignment + anchor)."""
     font_pt = float(style.get("font_pt") or style.get("size_pt") or 14)
     latin = style.get("font_latin") or "Calibri"
     cjk = style.get("font_cjk") or "黑体"
-    width_mm, height_mm = measure_text(text, font_pt, latin, cjk)
-    spacing = 1.0 if not line_spacing_pct else float(line_spacing_pct) / 100
-    height_mm *= spacing
-    align = style.get("align") or "left"
-    anchor = style.get("anchor") or "top"
     left, top, box_w, box_h = box
     inner_left = left + float(insets[0])
     inner_top = top + float(insets[1])
     inner_w = max(0.1, box_w - float(insets[0]) - float(insets[2]))
     inner_h = max(0.1, box_h - float(insets[1]) - float(insets[3]))
+    spacing = 1.0 if not line_spacing_pct else float(line_spacing_pct) / 100
+    if wrap:
+        wrapped = _wrap_by_measure(text, inner_w * 72 / 25.4, font_pt, latin, cjk)
+        scale = font_pt / 1000
+        width_mm = max((sum((_font(cjk) if unicodedata.east_asian_width(char) in "WF" else _font(latin))
+                            .getlength(char) for char in line) for line in wrapped), default=0.0)
+        width_mm = width_mm * scale * 25.4 / 72
+        height_mm = max(1, len(wrapped)) * font_pt * 1.22 * 25.4 / 72 * spacing
+    else:
+        width_mm, height_mm = measure_text(text, font_pt, latin, cjk)
+        height_mm *= spacing
+    spacing = 1.0 if not line_spacing_pct else float(line_spacing_pct) / 100
+    height_mm *= spacing
+    align = style.get("align") or "left"
+    anchor = style.get("anchor") or "top"
+    left, top, box_w, box_h = box
     if align == "center":
         ink_left = inner_left + (inner_w - width_mm) / 2
     elif align == "right":
@@ -282,6 +313,39 @@ def load_catalog(path):
         data = json.load(stream)
     override = data.get("text_styles", data) if isinstance(data, dict) else {}
     return merge_styles(override)
+
+
+
+def payload_text(payload):
+    if isinstance(payload.get("paragraphs"), list):
+        parts = []
+        for paragraph in payload["paragraphs"]:
+            parts.append("".join(str(run.get("text", "")) for run in paragraph.get("runs", [])))
+        return "\n".join(parts)
+    return str(payload.get("text") or "")
+
+
+def payload_collision_rect(payload, box):
+    """Collision border of an element: glyph ink for text, placement for images.
+
+    A badge is one element: its background plate is the collision box, the label
+    inside it is contained and therefore never counts as intersecting.
+    """
+    if payload.get("annotation") == "badge":
+        return list(box)
+    if "image" in payload:
+        return list(box)
+    style = {
+        "font_pt": payload.get("font_pt") or 14,
+        "font_latin": payload.get("font_latin") or "Calibri",
+        "font_cjk": payload.get("font_cjk") or "黑体",
+        "align": payload.get("align") or "left",
+        "anchor": payload.get("anchor") or "top",
+    }
+    insets = payload.get("insets_mm") or [0.0, 0.0, 0.0, 0.0]
+    return text_ink_rect(list(box), payload_text(payload), style, insets,
+                         payload.get("line_spacing_pct"),
+                         wrap=payload.get("word_wrap", True) is not False)
 
 
 def merge_styles(override=None, base=None):
