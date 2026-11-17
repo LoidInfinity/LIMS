@@ -23,7 +23,7 @@ if str(SHARED) not in sys.path:
     sys.path.insert(0, str(SHARED))
 from research_style.annotation import (classify, color_role_for, load_catalog,
                                        merge_text_colors, parse_citation, payload_collision_rect,
-                                       run_annotation, text_ink_rect)
+                                       payload_text, run_annotation, text_ink_rect)
 import colorsys
 
 P = "http://schemas.openxmlformats.org/presentationml/2006/main"
@@ -868,6 +868,34 @@ def _settle_page_ink(result, page_index):
                 second["item"]["overlay"] = True
 
 
+
+def _reserve_citation_band(result):
+    """Keep ordinary text above the strip where references will be placed."""
+    for module in result:
+        citations = [item for item in module["items"]
+                     if item.get("annotation") == "citation"]
+        if not citations:
+            continue
+        pad = float(module.get("padding_mm", 0.0))
+        inner = [module["rect"][0] + pad, module["rect"][1] + pad,
+                 max(1.0, module["rect"][2] - 2 * pad), max(1.0, module["rect"][3] - 2 * pad)]
+        lines = sum(max(1, len(payload_text(item).split("\n"))) for item in citations)
+        line_h = 12.0 * 1.35 * 25.4 / 72
+        band_top = inner[1] + inner[3] - 2.0 - lines * line_h - 1.5
+        for item in module["items"]:
+            if item.get("annotation") in ("citation", "badge") or "image" in item:
+                continue
+            box = _box_mm(item["box"], inner)
+            ink = payload_collision_rect(item, box)
+            overflow = (ink[1] + ink[3]) - band_top
+            if overflow <= 0.3:
+                continue
+            new_y = item["box"][1] - overflow / inner[3]
+            if new_y * inner[3] + inner[1] >= inner[1]:
+                item["box"][1] = max(0.0, new_y)
+            else:
+                item["overlay"] = True
+
 def analyse_slide(slide, number, colors, assets, asset_prefix, size_mm, padding=1.0, fonts=None,
                   catalog=None, palette=None):
     from lxml import etree
@@ -1015,6 +1043,7 @@ def analyse_slide(slide, number, colors, assets, asset_prefix, size_mm, padding=
             print("DEBUG result module:", [round(v,1) for v in module["rect"]], "items:", len(module["items"]))
         if module["items"] or module.get("fill"):
             result.append(module)
+    _reserve_citation_band(result)
     _settle_page_ink(result, number)
     return {"number": number, "title": title, "title_xml": title_xml,
             "layout_part": layout_part, "modules": result}

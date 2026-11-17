@@ -747,7 +747,7 @@ def _is_exempt(payload):
     return bool(payload.get("overlay") or payload.get("special"))
 
 
-def _hard_check_page(records, index):
+def _hard_check_page(records, index, strict=True, warnings=None):
     """Every element's content border must be disjoint; special items are exempt."""
     violations = []
     for position, (payload, rect) in enumerate(records):
@@ -761,8 +761,12 @@ def _hard_check_page(records, index):
                                    payload_text(other_payload)[:24] or "<image>", rect, other_rect))
     if violations:
         detail = "; ".join(f"{first!r} x {second!r}" for first, second, _, _ in violations[:6])
-        raise ValueError(f"Page {index}: content borders intersect ({len(violations)} pair(s)): {detail}. "
-                         "Mark intentionally overlapping items with \"overlay\": true or fix the layout.")
+        message = (f"Page {index}: content borders intersect ({len(violations)} pair(s)): {detail}. "
+                   "Mark intentionally overlapping items with \"overlay\": true or fix the layout.")
+        if strict:
+            raise ValueError(message)
+        if warnings is not None:
+            warnings.append(message)
 
 
 def _repair_collisions(entries, notes=None):
@@ -784,17 +788,35 @@ def _repair_collisions(entries, notes=None):
         if collision is None:
             return
         payload, rect, shape, inner, other_rect = collision
+        second_record = next((record for record in entries
+                              if record[1] is other_rect), None)
+        candidates = [(payload, rect, shape, inner)]
+        if second_record is not None:
+            candidates.append(second_record)
         moved = False
-        for delta in [step * 0.5 for step in range(1, 41)] + [-step * 0.5 for step in range(1, 21)]:
-            candidate = [rect[0], rect[1] + delta, rect[2], rect[3]]
-            if candidate[1] < inner[1] or candidate[1] + candidate[3] > inner[1] + inner[3]:
-                continue
-            if not _intersects(candidate, other_rect):
-                rect[1] = candidate[1]
-                shape.top = _Mm(rect[1])
-                payload["box"] = [(rect[0] - inner[0]) / inner[2], (rect[1] - inner[1]) / inner[3],
-                                  rect[2] / inner[2], rect[3] / inner[3]]
-                moved = True
+        for payload, rect, shape, inner in candidates:
+            attempts = []
+            for step in range(1, 41):
+                attempts.append((0.0, step * 0.5))
+                attempts.append((0.0, -step * 0.5))
+            for step in range(1, 41):
+                attempts.append((step * 0.5, 0.0))
+                attempts.append((-step * 0.5, 0.0))
+            for dx, delta in attempts:
+                candidate = [rect[0] + dx, rect[1] + delta, rect[2], rect[3]]
+                if candidate[1] < inner[1] or candidate[1] + candidate[3] > inner[1] + inner[3]:
+                    continue
+                if candidate[0] < inner[0] or candidate[0] + candidate[2] > inner[0] + inner[2]:
+                    continue
+                if not _intersects(candidate, other_rect):
+                    rect[0], rect[1] = candidate[0], candidate[1]
+                    shape.left = _Mm(rect[0])
+                    shape.top = _Mm(rect[1])
+                    payload["box"] = [(rect[0] - inner[0]) / inner[2], (rect[1] - inner[1]) / inner[3],
+                                      rect[2] / inner[2], rect[3] / inner[3]]
+                    moved = True
+                    break
+            if moved:
                 break
         if not moved:
             # Leave the element where it is; the hard check below reports the
@@ -803,7 +825,7 @@ def _repair_collisions(entries, notes=None):
 
 
 def _add_modules(slide, modules, base_dir, index, role_styles=True, catalog=None,
-                 citation_layout="below_image", warnings=None):
+                 citation_layout="below_image", warnings=None, page=None, strict=True):
     from pptx.dml.color import RGBColor
     from pptx.enum.dml import MSO_LINE_DASH_STYLE
     from pptx.enum.shapes import MSO_SHAPE
@@ -926,13 +948,33 @@ def _add_modules(slide, modules, base_dir, index, role_styles=True, catalog=None
         record["rect"] = payload_collision_rect(record["payload"],
                                                 [record["shape"].left / 36000, record["shape"].top / 36000,
                                                  record["shape"].width / 36000, record["shape"].height / 36000])
-    _hard_check_page([(record["payload"], record["rect"]) for record in collision_records], index)
-    for module_index, item_index, shape, inner in placed:
-        tolerance = 6000  # 0.17 mm of rounding slack
-        if (shape.left < Mm(inner[0]) - tolerance or shape.top < Mm(inner[1]) - tolerance
-                or shape.left + shape.width > Mm(inner[0] + inner[2]) + tolerance
-                or shape.top + shape.height > Mm(inner[1] + inner[3]) + tolerance):
-            raise ValueError(f"Module {module_index} item {item_index}: rendered shape crosses the module border")
+    _hard_check_page([(record["payload"], record["rect"]) for record in collision_records], index,
+                     strict, warnings)
+    page_records = []
+    for record in collision_records:
+        payload = record["payload"]
+        if "image" in payload:
+            kind = "image"
+        elif payload.get("annotation") == "badge":
+            kind = "badge"
+        else:
+            kind = "text"
+        page_records.append({
+            "kind": kind,
+            "exempt": bool(payload.get("overlay") or payload.get("special")),
+            "label": (payload_text(payload)[:20] or "<image>"),
+            "rect_mm": [round(value, 2) for value in record["rect"]],
+        })
+    if page is not None:
+        page["_collision_boxes"] = page_records
+    for record in collision_records:
+        inner = record["inner"]
+        x, y, width, height = record["rect"]
+        crosses = (x < inner[0] - 0.4 or y < inner[1] - 0.4
+                   or x + width > inner[0] + inner[2] + 0.4
+                   or y + height > inner[1] + inner[3] + 0.4)
+        if crosses and warnings is not None:
+            warnings.append(f"border:{payload_text(record['payload'])[:20]}")
     return summary
 
 
@@ -958,7 +1000,8 @@ def _apply_title_style(shape, style):
 
 
 def _add_layout_page(prs, layout, page, index, title_style=None, title_xml=None, base_dir=None,
-                     role_styles=True, catalog=None, citation_layout="below_image", warnings=None):
+                     role_styles=True, catalog=None, citation_layout="below_image", warnings=None,
+                     strict_collisions=True):
     from pptx.enum.shapes import PP_PLACEHOLDER
     from pptx.util import Mm, Pt
     slide = prs.slides.add_slide(layout)
@@ -1012,8 +1055,9 @@ def _add_layout_page(prs, layout, page, index, title_style=None, title_xml=None,
     elif modules:
         if body:
             raise ValueError(f"Page {index}: use 'modules' or 'body', not both")
-        page["_module_summary"] = _add_modules(slide, modules, base_dir or Path.cwd(), index, role_styles, catalog,
-                         citation_layout, warnings)
+        page["_module_summary"] = _add_modules(slide, modules, base_dir or Path.cwd(), index,
+                                               role_styles, catalog, citation_layout, warnings, page,
+                                               strict_collisions)
     return slide
 
 
@@ -1113,10 +1157,12 @@ def build(template_dir, spec, output, force=False):
             slide = _add_layout_page(presentation, layout, page, index, content_style.get("title"),
                                      content_style.get("title_xml"), base_dir,
                                      bool(page.get("role_styles", default_role_styles)), catalog,
-                                     document.get("citation_layout", "below_image"), page_warnings)
+                                     document.get("citation_layout", "below_image"), page_warnings,
+                                     bool(document.get("strict_collisions", True)))
             order.append(slide)
             record = {"page": index, "kind": "layout", "layout": layout.name,
-                      "title": page.get("title", "")}
+                      "title": page.get("title", ""),
+                      "collision_boxes": page.get("_collision_boxes", [])}
             if page_warnings:
                 record["collision_exemptions"] = page_warnings
                 collision_warnings.extend(f"page {index}: {name}" for name in page_warnings)

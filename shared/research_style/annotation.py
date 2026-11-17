@@ -322,6 +322,8 @@ def payload_text(payload):
         for paragraph in payload["paragraphs"]:
             parts.append("".join(str(run.get("text", "")) for run in paragraph.get("runs", [])))
         return "\n".join(parts)
+    if isinstance(payload.get("citation"), dict):
+        return "".join(value for _, value in citation_segments(payload["citation"]))
     return str(payload.get("text") or "")
 
 
