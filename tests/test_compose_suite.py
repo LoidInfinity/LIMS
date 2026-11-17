@@ -336,6 +336,46 @@ class ComposeTests(unittest.TestCase):
         self.assertEqual(paragraph.get("marL"), str(int(5.0 * 36000)))
         self.assertEqual(paragraph.get("indent"), str(int(-5.0 * 36000)))
 
+    def test_rich_runs_citation_and_baseline(self):
+        from pptx import Presentation
+        from pptx.enum.text import PP_ALIGN
+        from pptx.oxml.ns import qn
+        descriptor, target = self.template()
+        layout = self.layout_index(descriptor, "Title and Content")
+        page = {"layout": layout, "title": "富文本", "modules": [
+            {"rect": [10, 45, 300, 80], "padding_mm": 2.0, "items": [
+                {"box": [0, 0, 1, 0.42],
+                 "paragraphs": [{"runs": [{"text": "Fe(CN)"}, {"text": "6", "baseline": -25000},
+                                          {"text": "3-", "baseline": 30000}]}],
+                 "font_pt": 20, "font_latin": "黑体", "font_cjk": "黑体"},
+                {"box": [0, 0.48, 1, 0.42], "role": "citation",
+                 "citation": {"journal": "Nat. Mater.", "year": "2021",
+                              "volume": "21", "pages": "503"}}]}]}
+        output = self.root / "rich.pptx"
+        compose(target, {"template": descriptor["id"], "pages": [page]}, output)
+        slide = Presentation(str(output)).slides[0]
+        rich = next(shape for shape in slide.shapes if shape.has_text_frame and "Fe(CN)" in shape.text_frame.text)
+        baselines = [run._r.find(qn("a:rPr")).get("baseline")
+                     for run in rich.text_frame.paragraphs[0].runs]
+        self.assertEqual(baselines, [None, "-25000", "30000"])
+        citation = next(shape for shape in slide.shapes
+                        if shape.has_text_frame and "Nat. Mater." in shape.text_frame.text)
+        segments = citation.text_frame.paragraphs[0].runs
+        self.assertTrue(segments[0].font.italic)      # journal italic
+        self.assertTrue(segments[2].font.bold)        # year bold
+        self.assertTrue(segments[4].font.italic)      # volume italic
+        self.assertEqual(segments[0].font.size.pt, 10.5)
+        self.assertEqual(citation.text_frame.paragraphs[0].alignment, PP_ALIGN.CENTER)
+
+        disabled = dict(page)
+        compose(target, {"template": descriptor["id"], "role_styles": False, "pages": [disabled]},
+                self.root / "norole.pptx", force=True)
+        plain = Presentation(str(self.root / "norole.pptx")).slides[0]
+        plain_citation = next(shape for shape in plain.shapes
+                              if shape.has_text_frame and "Nat. Mater." in shape.text_frame.text)
+        # Without role defaults no size is forced, so the run inherits the theme.
+        self.assertIsNone(plain_citation.text_frame.paragraphs[0].runs[0].font.size)
+
     def test_fitted_textbox_centers_rewritten_text(self):
         from pptx import Presentation
         from pptx.enum.text import PP_ALIGN

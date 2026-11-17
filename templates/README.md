@@ -100,6 +100,16 @@ python tools/analyze_page.py "开题.pptx" --slide 4 --slide 5 --assets assets/a
 
 文本项保留三套字库：`font_latin`（英文与数字）、`font_cjk`（中文）、`font_cs`（复杂文种），主题字体别名（`+mn-lt` 等）会先解析成实际字面名。项目符号取段落的 `a:buFont`/`a:buChar`（本库模板小标题是 Wingdings `Ø`，渲染为三角箭头），连同 `a:buSzPct` 与 `marL/indent` 一起写回，而不是用 `• ` 前缀冒充。
 
+行内格式用 `paragraphs[].runs` 表达（逐段文字/斜体/加粗/颜色/字号），上标下标用 run 的 `baseline` 属性（`30000` / `-25000`）配普通字体，而不是 Unicode 上标字符。文本框 `insets_mm` 与 `anchor` 也按原稿保留。
+
+文字项可带 `role`（heading/subheading/body/caption/citation/note 等）先判定用途再套格式；引用用结构化字段：
+
+```json
+{"role": "citation", "citation": {"journal": "Nat. Mater.", "year": "2021", "volume": "21", "pages": "503"}}
+```
+
+渲染为期刊名斜体、年份加粗、卷号斜体、页码常规并居中。从源稿复现时在 spec 顶层设 `"role_styles": false`，避免角色默认格式覆盖原稿未显式设置的属性。
+
 ## 双板块与留白率
 
 需要把一页分成左右（或上下）两块时，用 `panels` 让版式比例和留白自动受控：

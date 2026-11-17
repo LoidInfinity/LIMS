@@ -215,6 +215,90 @@ def _set_run_style(run, item):
         run.font.color.rgb = RGBColor.from_string(item["color"].lstrip("#"))
 
 
+ROLE_PROFILES = {
+    "title": {"font_pt": 40, "bold": True, "color": "#002060", "align": "center",
+              "font_latin": "黑体", "font_cjk": "黑体", "font_cs": "Calibri"},
+    "heading": {"font_pt": 16, "bold": True, "color": "#1F3864",
+                "font_latin": "黑体", "font_cjk": "黑体", "font_cs": "Calibri"},
+    "subheading": {"font_pt": 14, "bold": True, "color": "#1F3864",
+                   "font_latin": "黑体", "font_cjk": "黑体", "font_cs": "Calibri"},
+    "body": {"font_pt": 14, "color": "#000000",
+             "font_latin": "黑体", "font_cjk": "黑体", "font_cs": "Calibri"},
+    "caption": {"font_pt": 10.5, "color": "#404040", "italic": True, "align": "center",
+                "font_latin": "Calibri", "font_cjk": "宋体", "font_cs": "Calibri"},
+    "citation": {"font_pt": 10.5, "color": "#000000", "align": "center",
+                 "font_latin": "Calibri", "font_cjk": "宋体", "font_cs": "Calibri"},
+    "note": {"font_pt": 9, "color": "#595959",
+             "font_latin": "Calibri", "font_cjk": "宋体", "font_cs": "Calibri"},
+    "page_number": {"font_pt": 10, "color": "#8C8C8C", "align": "right"},
+}
+CITATION_KEYS = ("journal", "year", "volume", "pages")
+BASELINE_KEYS = ("baseline", "font_pt", "bold", "italic", "color",
+                 "font_latin", "font_cjk", "font_cs")
+
+
+def effective_style(item, role_styles=True):
+    """Role defaults first, then explicit item properties, then per-run overrides.
+
+    Reproduction specs disable role styles: the source deck's explicit runs are
+    authoritative, including the properties it does NOT set.
+    """
+    style = dict(ROLE_PROFILES.get(str(item.get("role") or ""), {})) if role_styles else {}
+    for key in ("font_pt", "bold", "italic", "color", "align", "anchor",
+                "font_latin", "font_cjk", "font_cs", "line_spacing_pct", "space_after_pt", "baseline"):
+        if key in item:
+            style[key] = item[key]
+    return style
+
+
+def citation_paragraph(citation, style):
+    """Render a reference as journal-italic, year-bold, volume-italic + pages."""
+    runs = []
+    if citation.get("journal"):
+        runs.append({"text": str(citation["journal"]), "italic": True})
+    if citation.get("year"):
+        runs.append({"text": " "})
+        runs.append({"text": str(citation["year"]), "bold": True})
+    if citation.get("volume"):
+        runs.append({"text": ", "})
+        runs.append({"text": str(citation["volume"]), "italic": True})
+    if citation.get("pages"):
+        runs.append({"text": ", "})
+        runs.append({"text": str(citation["pages"])})
+    if not runs:
+        raise ValueError("citation needs journal/year/volume/pages")
+    runs.append({"text": "."})
+    return {"runs": runs, "align": style.get("align", "center")}
+
+
+def _paragraph_runs(paragraph_spec):
+    if isinstance(paragraph_spec.get("runs"), list) and paragraph_spec["runs"]:
+        return paragraph_spec["runs"]
+    return [{"text": str(paragraph_spec.get("text", ""))}]
+
+
+def _paragraph_text(paragraph_spec):
+    return "".join(str(run.get("text", "")) for run in _paragraph_runs(paragraph_spec))
+
+
+def _text_items(item, style):
+    """Normalize 'text', 'citation' and 'paragraphs' forms into a paragraph list."""
+    if isinstance(item.get("paragraphs"), list) and item["paragraphs"]:
+        return item["paragraphs"]
+    if isinstance(item.get("citation"), dict):
+        return [citation_paragraph(item["citation"], style)]
+    text = item.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("text item needs 'text', 'citation' or 'paragraphs'")
+    paragraphs = []
+    for line in text.split("\n"):
+        paragraph = {"runs": [{"text": line}]}
+        if isinstance(item.get("bullet"), dict):
+            paragraph["bullet"] = item["bullet"]
+        paragraphs.append(paragraph)
+    return paragraphs
+
+
 def _apply_fonts(run, item):
     """Write the latin (English/digits), CJK and complex-script typefaces."""
     from xml.sax.saxutils import escape
@@ -233,6 +317,15 @@ def _apply_fonts(run, item):
         if existing is not None:
             properties.remove(existing)
         properties.append(parse_xml('<a:%s %s typeface="%s"/>' % (tag, nsdecls("a"), escape(str(value)))))
+
+
+def _apply_baseline(run, value):
+    """Superscript/subscript is a run property (normal font, raised/lowered baseline)."""
+    try:
+        offset = int(round(float(value)))
+    except (TypeError, ValueError):
+        raise ValueError(f"baseline must be a number like 30000 or -25000, got {value!r}") from None
+    run._r.get_or_add_rPr().set("baseline", str(offset))
 
 
 def _apply_bullet(paragraph, bullet):
@@ -257,39 +350,54 @@ def _apply_bullet(paragraph, bullet):
         properties.append(parse_xml(fragment))
 
 
-def _add_text_item(slide, left_mm, top_mm, box, item, module_index, item_index):
+def _add_text_item(slide, left_mm, top_mm, box, item, module_index, item_index, role_styles=True):
     from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
     from pptx.util import Mm, Pt
-    text = item.get("text")
-    if not isinstance(text, str) or not text.strip():
-        raise ValueError(f"Module {module_index} item {item_index}: text item needs nonempty 'text'")
+    style = effective_style(item, role_styles)
+    paragraphs = _text_items(item, style)
     width_mm, height_mm = box[2], box[3]
-    size = item.get("font_pt", 16)
-    needed = _text_height_mm(text, width_mm - 1.0, size)
+    size = style.get("font_pt", 16)
+    joined = "\n".join(_paragraph_text(paragraph) for paragraph in paragraphs)
+    needed = _text_height_mm(joined, width_mm - 1.0, size)
     if needed > height_mm + 0.5:
         raise ValueError(f"Module {module_index} item {item_index}: text needs {needed:.1f} mm but its box is "
                          f"{height_mm:.1f} mm high; enlarge the box, shorten the text or lower font_pt")
     shape = slide.shapes.add_textbox(Mm(left_mm), Mm(top_mm), Mm(width_mm), Mm(height_mm))
     frame = shape.text_frame
     frame.word_wrap = True
-    frame.margin_left = frame.margin_right = Mm(0.6)
-    frame.margin_top = frame.margin_bottom = Mm(0.3)
-    frame.vertical_anchor = getattr(MSO_ANCHOR, (item.get("anchor") or "middle").upper())
-    bullet = item.get("bullet") if isinstance(item.get("bullet"), dict) else None
-    lines = text.split("\n")
-    for position, line in enumerate(lines):
+    insets = item.get("insets_mm")
+    if isinstance(insets, list) and len(insets) == 4:
+        frame.margin_left, frame.margin_top = Mm(float(insets[0])), Mm(float(insets[1]))
+        frame.margin_right, frame.margin_bottom = Mm(float(insets[2])), Mm(float(insets[3]))
+    else:
+        frame.margin_left = frame.margin_right = Mm(2.54)
+        frame.margin_top = frame.margin_bottom = Mm(1.27)
+    frame.vertical_anchor = getattr(MSO_ANCHOR, (style.get("anchor") or "top").upper())
+    item_bullet = item.get("bullet") if isinstance(item.get("bullet"), dict) else None
+    for position, paragraph_spec in enumerate(paragraphs):
         paragraph = frame.paragraphs[0] if position == 0 else frame.add_paragraph()
-        paragraph.alignment = getattr(PP_ALIGN, ALIGNMENTS.get(item.get("align", "left"), "LEFT"))
-        if item.get("line_spacing_pct"):
-            paragraph.line_spacing = float(item["line_spacing_pct"]) / 100
-        if item.get("space_after_pt") is not None:
-            paragraph.space_after = Pt(float(item["space_after_pt"]))
+        alignment = paragraph_spec.get("align") or style.get("align", "left")
+        paragraph.alignment = getattr(PP_ALIGN, ALIGNMENTS.get(alignment, "LEFT"))
+        line_spacing = paragraph_spec.get("line_spacing_pct", style.get("line_spacing_pct"))
+        if line_spacing:
+            paragraph.line_spacing = float(line_spacing) / 100
+        space_after = paragraph_spec.get("space_after_pt", style.get("space_after_pt"))
+        if space_after is not None:
+            paragraph.space_after = Pt(float(space_after))
+        bullet = paragraph_spec.get("bullet") or item_bullet
         if bullet:
             _apply_bullet(paragraph, bullet)
-        run = paragraph.add_run()
-        run.text = line
-        _set_run_style(run, item)
-        _apply_fonts(run, item)
+        for run_spec in _paragraph_runs(paragraph_spec):
+            run = paragraph.add_run()
+            run.text = str(run_spec.get("text", ""))
+            merged = dict(style)
+            for key in BASELINE_KEYS:
+                if key in run_spec:
+                    merged[key] = run_spec[key]
+            _set_run_style(run, merged)
+            _apply_fonts(run, merged)
+            if merged.get("baseline") is not None:
+                _apply_baseline(run, merged["baseline"])
     return shape
 
 
@@ -339,7 +447,7 @@ def _content_fraction(items):
     return max(0.0, (right - left) * (bottom - top))
 
 
-def _add_panels(slide, panels, base_dir, index):
+def _add_panels(slide, panels, base_dir, index, role_styles=True):
     area = panels.get("area") or [8.2, 26.0, 322.3, 156.0]
     if not isinstance(area, list) or len(area) != 4:
         raise ValueError(f"Page {index}: panels.area must be [x_mm, y_mm, w_mm, h_mm]")
@@ -376,14 +484,14 @@ def _add_panels(slide, panels, base_dir, index):
         raise ValueError(f"Page {index}: panel whitespace differs too much "
                          f"({whitespaces[0]:.3f} vs {whitespaces[1]:.3f}, tolerance {tolerance}); "
                          "balance the content or adjust panels.ratio")
-    summary = _add_modules(slide, modules, base_dir, index)
+    summary = _add_modules(slide, modules, base_dir, index, role_styles)
     for position, entry in enumerate(summary):
         entry["panel"] = position + 1
         entry["whitespace"] = round(whitespaces[position], 4)
     return summary
 
 
-def _add_modules(slide, modules, base_dir, index):
+def _add_modules(slide, modules, base_dir, index, role_styles=True):
     from pptx.dml.color import RGBColor
     from pptx.enum.dml import MSO_LINE_DASH_STYLE
     from pptx.enum.shapes import MSO_SHAPE
@@ -469,8 +577,9 @@ def _add_modules(slide, modules, base_dir, index):
             top = inner[1] + box[1] * inner[3]
             size = (box[2] * inner[2], box[3] * inner[3])
             target = (left, top, size[0], size[1])
-            if "text" in item:
-                placed_shape = _add_text_item(slide, left, top, target, item, module_index, item_index)
+            if "text" in item or "paragraphs" in item or "citation" in item:
+                placed_shape = _add_text_item(slide, left, top, target, item, module_index, item_index,
+                                              role_styles)
             elif "image" in item:
                 placed_shape = _add_image_item(slide, left, top, target, item, module_index, item_index, base_dir)
             else:
@@ -507,7 +616,8 @@ def _apply_title_style(shape, style):
                 run.font.color.rgb = RGBColor.from_string(style["color"].lstrip("#"))
 
 
-def _add_layout_page(prs, layout, page, index, title_style=None, title_xml=None, base_dir=None):
+def _add_layout_page(prs, layout, page, index, title_style=None, title_xml=None, base_dir=None,
+                     role_styles=True):
     from pptx.enum.shapes import PP_PLACEHOLDER
     from pptx.util import Mm, Pt
     slide = prs.slides.add_slide(layout)
@@ -557,11 +667,11 @@ def _add_layout_page(prs, layout, page, index, title_style=None, title_xml=None,
     if panels:
         if modules or body:
             raise ValueError(f"Page {index}: use 'panels', 'modules' or 'body' alone, not a combination")
-        page["_module_summary"] = _add_panels(slide, panels, base_dir or Path.cwd(), index)
+        page["_module_summary"] = _add_panels(slide, panels, base_dir or Path.cwd(), index, role_styles)
     elif modules:
         if body:
             raise ValueError(f"Page {index}: use 'modules' or 'body', not both")
-        page["_module_summary"] = _add_modules(slide, modules, base_dir or Path.cwd(), index)
+        page["_module_summary"] = _add_modules(slide, modules, base_dir or Path.cwd(), index, role_styles)
     return slide
 
 
@@ -617,6 +727,7 @@ def build(template_dir, spec, output, force=False):
     slides = {prototype_id: slide for prototype_id, slide in
               zip([prototype["id"] for prototype in descriptor.get("prototypes", [])], presentation.slides)}
     used, order, manifest_pages = set(), [], []
+    default_role_styles = bool(document.get("role_styles", True))
     for index, page in enumerate(pages, 1):
         if not isinstance(page, dict):
             raise ValueError(f"Page {index} must be an object")
@@ -640,7 +751,8 @@ def build(template_dir, spec, output, force=False):
             layout = _layout(presentation, page["layout"], descriptor)
             content_style = descriptor.get("content_style", {})
             slide = _add_layout_page(presentation, layout, page, index, content_style.get("title"),
-                                     content_style.get("title_xml"), base_dir)
+                                     content_style.get("title_xml"), base_dir,
+                                     bool(page.get("role_styles", default_role_styles)))
             order.append(slide)
             record = {"page": index, "kind": "layout", "layout": layout.name,
                       "title": page.get("title", "")}

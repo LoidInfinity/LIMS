@@ -13,6 +13,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import unicodedata
 import zipfile
 from xml.etree import ElementTree as ET
 import colorsys
@@ -309,49 +310,114 @@ def paragraph_spacing(paragraph):
     return record
 
 
+CITATION_RE = re.compile(r"(19|20)\d{2}")
+ROLE_ALIGN = {"LEFT": "left", "CENTER": "center", "RIGHT": "right", "JUSTIFY": "justify"}
+
+
+def paragraph_plain_text(paragraph_spec):
+    return "".join(str(run.get("text", "")) for run in paragraph_spec.get("runs", []))
+
+
+def payload_plain_text(payload):
+    return "\n".join(paragraph_plain_text(paragraph) for paragraph in payload.get("paragraphs", []))
+
+
+def run_payload(run, colors, fonts):
+    from pptx.oxml.ns import qn
+    record = {"text": run.text}
+    if run.font.size:
+        record["font_pt"] = round(run.font.size.pt, 1)
+    if run.font.bold:
+        record["bold"] = True
+    if run.font.italic:
+        record["italic"] = True
+    color = run_color(run, colors)
+    if color:
+        record["color"] = color
+    properties = run._r.find(qn("a:rPr"))
+    if properties is not None:
+        baseline = properties.get("baseline")
+        if baseline is not None:
+            try:
+                record["baseline"] = int(baseline)
+            except ValueError:
+                pass
+        for tag, key in (("latin", "font_latin"), ("ea", "font_cjk"), ("cs", "font_cs")):
+            node = properties.find(qn("a:" + tag))
+            value = resolve_typeface(node.get("typeface") if node is not None else None, fonts)
+            if value:
+                record[key] = value
+    return record
+
+
+def infer_role(paragraphs, size, bold):
+    """Decide what a text block is used for, so formatting can follow its role."""
+    text = " ".join("".join(str(run.get("text", "")) for run in paragraph.get("runs", []))
+                    for paragraph in paragraphs).strip()
+    lowered = text.lower()
+    if (size and size <= 13 and len(text) <= 120 and CITATION_RE.search(text)
+            and re.match(r"^[A-Z][A-Za-z.&'\- ]{2,}[ ,]", text)
+            and not lowered.startswith(("http", "doi"))):
+        return "citation"
+    if bold and size and size >= 15:
+        return "heading"
+    if bold and size and size >= 12.5:
+        return "subheading"
+    if size and size <= 11:
+        return "note"
+    return "body"
+
+
 def text_payload(shape, colors, fonts, default_pt=18):
     from pptx.oxml.ns import qn
-    paragraphs = shape.text_frame.paragraphs
-    lines = [paragraph.text for paragraph in paragraphs]
-    text = "\n".join(lines).rstrip("\n")
-    if not text.strip():
+    paragraphs = list(shape.text_frame.paragraphs)
+    if not any(paragraph.text.strip() for paragraph in paragraphs):
         return None
-    first_run = next((run for paragraph in paragraphs for run in paragraph.runs if run.text.strip()), None)
-    size = first_run.font.size.pt if first_run is not None and first_run.font.size else default_pt
-    payload = {"text": text, "font_pt": round(size, 1)}
-    if first_run is not None:
-        run_properties = first_run._r.find(qn("a:rPr"))
-        if run_properties is not None:
-            for tag, key in (("latin", "font_latin"), ("ea", "font_cjk"), ("cs", "font_cs")):
-                node = run_properties.find(qn("a:" + tag))
-                value = resolve_typeface(node.get("typeface") if node is not None else None, fonts)
-                if value:
-                    payload[key] = value
-        if first_run.font.bold:
-            payload["bold"] = True
-        if first_run.font.italic:
-            payload["italic"] = True
-        color = run_color(first_run, colors)
-        if color:
-            payload["color"] = color
-    alignment = next((p.alignment for p in paragraphs if p.alignment is not None), None)
-    if alignment is not None:
-        payload["align"] = {"LEFT": "left", "CENTER": "center", "RIGHT": "right",
-                            "JUSTIFY": "justify"}.get(alignment.name, "left")
-    anchor = shape.text_frame.vertical_anchor
-    if anchor is not None:
-        payload["anchor"] = {"TOP": "top", "MIDDLE": "middle", "BOTTOM": "bottom"}.get(anchor.name, "top")
+    raw = []
     for paragraph in paragraphs:
+        entry = {"runs": [run_payload(run, colors, fonts) for run in paragraph.runs]}
         bullet = bullet_of(paragraph, colors)
         if bullet:
-            payload["bullet"] = bullet
-            break
-    payload.update(paragraph_spacing(paragraphs[0]))
+            entry["bullet"] = bullet
+        if paragraph.alignment is not None:
+            entry["align"] = ROLE_ALIGN.get(paragraph.alignment.name, "left")
+        entry.update(paragraph_spacing(paragraph))
+        raw.append(entry)
+    first_run = next((run for paragraph in raw for run in paragraph["runs"] if run.get("text", "").strip()), None)
+    defaults = {}
+    if first_run is not None:
+        for key in ("font_pt", "font_latin", "font_cjk", "font_cs"):
+            if key in first_run:
+                defaults[key] = first_run[key]
+    size = defaults.get("font_pt", default_pt)
+    bold = any(run.get("bold") for paragraph in raw for run in paragraph["runs"])
+    for paragraph in raw:
+        for run in paragraph["runs"]:
+            for key, value in defaults.items():
+                if run.get(key) == value:
+                    del run[key]
+            for key in ("bold", "italic"):
+                if run.get(key) is False:
+                    del run[key]
+    payload = {"paragraphs": raw, "role": infer_role(raw, size, bold)}
+    payload.update(defaults)
+    for key in ("align", "bullet", "line_spacing_pct", "space_after_pt"):
+        values = {str(paragraph.get(key)) for paragraph in raw}
+        if len(values) == 1 and key in raw[0]:
+            payload[key] = raw[0][key]
+            for paragraph in raw:
+                paragraph.pop(key, None)
+    frame = shape.text_frame
+    payload["insets_mm"] = [round(frame.margin_left / EMU_MM, 3), round(frame.margin_top / EMU_MM, 3),
+                            round(frame.margin_right / EMU_MM, 3), round(frame.margin_bottom / EMU_MM, 3)]
+    anchor = frame.vertical_anchor
+    if anchor is not None:
+        payload["anchor"] = {"TOP": "top", "MIDDLE": "middle", "BOTTOM": "bottom"}.get(anchor.name, "top")
     return payload
 
 
 def text_em(text):
-    return sum(1.0 if ord(char) > 0x2E80 else 0.5 for char in text)
+    return sum(1.0 if unicodedata.east_asian_width(char) in "WF" else 0.5 for char in text)
 
 
 def text_height_mm(text, width_mm, font_pt, line_factor=1.35):
@@ -385,12 +451,14 @@ def clip(item_rect, area):
 
 def fit_text(payload, rect, inner):
     """Shrink the font until the text fits its original box, then expand the box if needed."""
-    width = max(1.0, rect[2] - 1.2)
-    size = payload.get("font_pt", 14)
-    while size > 8 and text_height_mm(payload["text"], width, size) > rect[3]:
+    width = max(1.0, rect[2] - 1.0)
+    plain = payload_plain_text(payload)
+    target = max(1.0, rect[3] - 1.0)
+    size = payload.get("font_pt", 18)
+    while size > 8 and text_height_mm(plain, width, size) > target:
         size -= 1
     payload["font_pt"] = size
-    needed = text_height_mm(payload["text"], width, size)
+    needed = text_height_mm(plain, width, size)
     if needed > rect[3]:
         grow = needed - rect[3]
         room_below = inner[1] + inner[3] - (rect[1] + rect[3])
@@ -469,7 +537,7 @@ def analyse_slide(slide, number, colors, assets, asset_prefix, size_mm, padding=
             rect = clip(item["rect"], inner)
             if rect is None:
                 continue
-            if "text" in item:
+            if "text" in item or "paragraphs" in item or "citation" in item:
                 rect = fit_text(item, list(rect), inner)
             box = [(rect[0] - inner[0]) / inner[2], (rect[1] - inner[1]) / inner[3],
                    rect[2] / inner[2], rect[3] / inner[3]]
@@ -480,9 +548,9 @@ def analyse_slide(slide, number, colors, assets, asset_prefix, size_mm, padding=
             if "image" in item:
                 payload["image"] = item["image"]
             else:
-                for key in ("text", "font_pt", "bold", "italic", "color", "align", "anchor",
-                            "font_latin", "font_cjk", "font_cs", "bullet",
-                            "line_spacing_pct", "space_after_pt"):
+                for key in ("text", "paragraphs", "role", "font_pt", "bold", "italic", "color",
+                            "align", "anchor", "font_latin", "font_cjk", "font_cs", "bullet",
+                            "line_spacing_pct", "space_after_pt", "insets_mm"):
                     if key in item:
                         payload[key] = item[key]
                 payload.setdefault("font_pt", 18)
@@ -518,7 +586,9 @@ def build_spec(deck_path, slides, assets, asset_prefix, layout, template=None, r
                 page["title_xml"] = analysis["title_xml"]
         pages.append(page)
         raw.append(analysis)
-    spec = {"pages": pages, "base_dir": "."}
+    # Reproduction stays faithful to the deck: roles are recorded, but role
+    # defaults must not add styling the source never set.
+    spec = {"pages": pages, "base_dir": ".", "role_styles": False}
     if template:
         spec["template"] = template
     if report:
